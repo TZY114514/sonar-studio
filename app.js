@@ -1,10 +1,18 @@
-import {FileWindow,scanSl3,scanBin,combineFixes,findAlignment,matchedGpsForFrame,exportAligned,recordingSummary} from './engine.js';
+import {FileWindow,scanSl3,scanBin,combineFixes,findAlignment,matchedGpsForFrame,nearestSample,exportAligned,recordingSummary,trackGeoJson,trackGpx,buildSeabedModel} from './engine.js';
+import {createRouteMap} from './route-map.js';
+import {renderScan} from './scan-image.js';
 
 const $=id=>document.getElementById(id);
 const PREVIEW_SECONDS=30;
-const state={sonar:null,bins:[],frames:null,summary:null,gps:null,sync:null,route:[],scanPoints:[],selectedScan:-1,previewStart:0,version:0,alignmentVersion:0,previewVersion:0,aligning:false,busy:false,urls:[]};
+const state={sonar:null,bins:[],frames:null,summary:null,gps:null,sync:null,route:[],trackFixes:[],samples:[],scanPoints:[],selection:null,previewStart:0,previewWindow:null,previewChannel:null,previewScan:null,version:0,alignmentVersion:0,previewVersion:0,aligning:false,busy:false,urls:[],seabed:{viewer:null,model:null,building:false,version:0}};
 const count=value=>Number(value||0).toLocaleString('en-US');
 const durationText=seconds=>{const s=Math.max(0,Math.round(seconds));return `${Math.floor(s/3600)}h ${String(Math.floor(s%3600/60)).padStart(2,'0')}m ${String(s%60).padStart(2,'0')}s`;};
+const clockText=seconds=>{const s=Math.max(0,Math.round(seconds)),h=Math.floor(s/3600),m=Math.floor(s%3600/60),rest=String(s%60).padStart(2,'0');return h?`${h}:${String(m).padStart(2,'0')}:${rest}`:`${m}:${rest}`;};
+const CHANNEL_LABELS={5:'sidescan',2:'downscan'};
+const CHANNEL_GUIDES={5:'Bright bands show stronger echoes. The dark center band is directly beneath the boat. Colors are enhanced for display.',
+  2:'Bright bands show stronger echoes. The top edge is the water surface and depth increases downward. Colors are enhanced for display.'};
+// Preview sidescan when the recording has it, otherwise downscan.
+const previewChannel=summary=>summary?.counts.sidescan?5:summary?.counts.downscan?2:null;
 const sizeText=bytes=>bytes>=1e9?`${(bytes/1e9).toFixed(2)} GB`:`${(bytes/1e6).toFixed(1)} MB`;
 
 function status(mode,message,progress=null){
@@ -20,8 +28,11 @@ function ready(){
   const channels=document.querySelectorAll('#channel-list input:checked').length;
   const okay=Boolean(state.sonar&&state.bins.length&&state.frames&&state.sync?.trusted&&channels&&!state.aligning&&!state.busy);
   $('export-button').disabled=!okay;
+  $('download-gpx').disabled=$('download-geojson').disabled=!(state.trackFixes.length>=2&&!state.aligning);
+  $('build-seabed').disabled=!(state.sync?.trusted&&state.trackFixes.length>=2&&!state.aligning&&!state.busy&&!state.seabed.building);
   $('sonar-input').disabled=state.busy||state.aligning;$('gps-input').disabled=state.busy||state.aligning;
   $('entire-file').disabled=state.busy;
+  $('use-preview-window').disabled=state.busy||!state.selection;
   document.querySelectorAll('#channel-list input').forEach(input=>input.disabled=state.busy);
   $('start-seconds').disabled=state.busy||$('entire-file').checked;
   $('duration-seconds').disabled=state.busy||$('entire-file').checked;
@@ -34,47 +45,52 @@ function details(summary){
   for(const [label,value] of rows){const item=document.createElement('div'),dt=document.createElement('dt'),dd=document.createElement('dd');dt.textContent=label;dd.textContent=value;item.append(dt,dd);list.append(item);}
 }
 
-function drawRoute(points=state.route){
-  const svg=$('route-svg');svg.replaceChildren();
-  if(points.length<2){const label=state.sonar&&state.bins.length?'No verified GPS route to show':'Choose files to see the route';const text=document.createElementNS('http://www.w3.org/2000/svg','text');text.setAttribute('x','250');text.setAttribute('y','130');text.setAttribute('text-anchor','middle');text.setAttribute('class','route-empty');text.textContent=label;svg.append(text);return;}
-  const lat0=points.reduce((sum,item)=>sum+item[1],0)/points.length,projectInput=p=>[p[0]*Math.cos(lat0*Math.PI/180),-p[1]],xy=points.map(projectInput);
-  const xs=xy.map(p=>p[0]),ys=xy.map(p=>p[1]);const minX=Math.min(...xs),maxX=Math.max(...xs),minY=Math.min(...ys),maxY=Math.max(...ys);
-  const scale=Math.min(430/Math.max(maxX-minX,1e-6),190/Math.max(maxY-minY,1e-6));
-  const project=p=>[250+(p[0]-(minX+maxX)/2)*scale,130+(p[1]-(minY+maxY)/2)*scale];
-  const projected=xy.map(project),line=document.createElementNS('http://www.w3.org/2000/svg','polyline');
-  line.setAttribute('points',projected.map(p=>p.map(v=>v.toFixed(1)).join(',')).join(' '));line.setAttribute('fill','none');line.setAttribute('stroke','#07858e');line.setAttribute('stroke-width','3');line.setAttribute('stroke-linejoin','round');line.setAttribute('stroke-linecap','round');svg.append(line);
-  for(const [p,color] of [[projected[0],'#1aa982'],[projected.at(-1),'#e45b4f']]){const marker=document.createElementNS('http://www.w3.org/2000/svg','circle');marker.setAttribute('cx',p[0]);marker.setAttribute('cy',p[1]);marker.setAttribute('r','6');marker.setAttribute('fill',color);marker.setAttribute('stroke','white');marker.setAttribute('stroke-width','2');svg.append(marker);}
-  state.scanPoints.forEach((scan,i)=>{
-    const [x,y]=project(projectInput([scan.lon,scan.lat]));
-    const group=document.createElementNS('http://www.w3.org/2000/svg','g');
-    group.setAttribute('class',`scan-marker${i===state.selectedScan?' is-selected':''}`);
-    group.setAttribute('role','button');group.setAttribute('tabindex','0');group.setAttribute('data-scan-index',String(i));
-    group.setAttribute('aria-label',`Scan ${i+1} at ${durationText(scan.time)}; latitude ${scan.lat.toFixed(6)}, longitude ${scan.lon.toFixed(6)}`);
-    const title=document.createElementNS('http://www.w3.org/2000/svg','title');title.textContent=`Scan ${i+1} · ${durationText(scan.time)}`;
-    const ring=document.createElementNS('http://www.w3.org/2000/svg','circle');ring.setAttribute('class','scan-marker-ring');ring.setAttribute('cx',x);ring.setAttribute('cy',y);ring.setAttribute('r','17');
-    const circle=document.createElementNS('http://www.w3.org/2000/svg','circle');circle.setAttribute('class','scan-marker-dot');circle.setAttribute('cx',x);circle.setAttribute('cy',y);circle.setAttribute('r','13');
-    const number=document.createElementNS('http://www.w3.org/2000/svg','text');number.setAttribute('x',x);number.setAttribute('y',y+4);number.setAttribute('text-anchor','middle');number.setAttribute('class','scan-marker-number');number.textContent=String(i+1);
-    group.append(title,ring,circle,number);
-    group.addEventListener('click',()=>selectScan(i));
-    group.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();selectScan(i);}});
-    svg.append(group);
+function drawRoute(){
+  if(state.route.length<2){routeMap.clear(state.sonar&&state.bins.length?'No verified GPS route to show':'Choose files to see the route');return;}
+  routeMap.showRoute(state.route,state.scanPoints,(scan,i)=>`Scan ${i+1} at ${durationText(scan.time)}; latitude ${scan.lat.toFixed(6)}, longitude ${scan.lon.toFixed(6)}`);
+  routeMap.select(state.selection);
+}
+
+// Numbered scan points either side of the current preview time, for the ‹ › buttons.
+function neighbourScan(direction){
+  const time=state.selection?.time??state.previewStart+PREVIEW_SECONDS/2;
+  const indices=state.scanPoints.map((_,i)=>i).filter(i=>direction<0?state.scanPoints[i].time<time-.5:state.scanPoints[i].time>time+.5);
+  return indices.length?(direction<0?indices.at(-1):indices[0]):-1;
+}
+
+function channelChoices(){
+  document.querySelectorAll('input[name="preview-channel"]').forEach(input=>{
+    const channel=Number(input.value),counts=state.summary?.counts;
+    input.disabled=!counts?.[CHANNEL_LABELS[channel]];input.checked=channel===state.previewChannel;
   });
 }
 
-const colorStops=[[0,[8,11,34]],[.20,[58,15,95]],[.46,[139,26,104]],[.72,[230,80,55]],[.9,[249,169,42]],[1,[252,249,125]]];
-function color(value){const v=Math.max(0,Math.min(1,value));let i=1;while(i<colorStops.length-1&&v>colorStops[i][0])i++;const [x,a]=colorStops[i-1],[y,b]=colorStops[i],t=(v-x)/(y-x);return a.map((n,j)=>Math.round(n+(b[j]-n)*t));}
+// Recolour the cached preview with the current contrast and brightness; no file reads.
+function drawPreview(){
+  const canvas=$('sonar-canvas');
+  renderScan(canvas,state.previewScan,{contrast:Number($('preview-contrast').value),brightness:Number($('preview-brightness').value)});
+  canvas.hidden=false;$('preview-placeholder').hidden=true;$('save-image').disabled=false;
+}
 
 async function preview(){
   const {sonar,frames,summary,version}=state,previewVersion=++state.previewVersion;if(!sonar||!frames||!summary)return;
-  const placeholder=$('preview-placeholder'),canvas=$('sonar-canvas');canvas.hidden=true;placeholder.hidden=false;placeholder.textContent='Preparing the sonar preview…';
-  const start=Math.max(0,Math.round(state.previewStart));
-  const selected=state.scanPoints[state.selectedScan];
-  $('preview-caption').textContent=selected?`Scan ${state.selectedScan+1} of ${state.scanPoints.length} · 30 s around ${durationText(selected.time)}`:`Preview at ${durationText(start)} · display enhanced`;
-  $('preview-previous').disabled=selected?state.selectedScan===0:start<PREVIEW_SECONDS;
-  $('preview-next').disabled=selected?state.selectedScan===state.scanPoints.length-1:start+2*PREVIEW_SECONDS>=summary.duration;
+  const placeholder=$('preview-placeholder'),canvas=$('sonar-canvas');
+  const start=Math.max(0,Math.round(state.previewStart)),end=Math.min(summary.duration,start+PREVIEW_SECONDS),channel=state.previewChannel;
+  const selection=state.selection,windowText=`${clockText(start)}–${clockText(end)}`;
+  state.previewWindow={start,end};$('use-preview-window').textContent=`Use preview window (${windowText})`;
+  $('preview-caption').textContent=selection?.kind==='scan'?`Scan ${selection.index+1} of ${state.scanPoints.length} · ${windowText}`:selection?`Route point · ${windowText}`:`Preview ${windowText} · display enhanced`;
+  routeMap.highlightWindow(state.samples.filter(sample=>sample.time>=start&&sample.time<=end));
+  $('preview-channel').textContent=channel==null?'No image channel':`Enhanced ${CHANNEL_LABELS[channel]}`;
+  $('preview-guide').textContent=CHANNEL_GUIDES[channel]??CHANNEL_GUIDES[5];
+  $('preview-previous').disabled=state.scanPoints.length?neighbourScan(-1)<0:start<PREVIEW_SECONDS;
+  $('preview-next').disabled=state.scanPoints.length?neighbourScan(1)<0:start+2*PREVIEW_SECONDS>=summary.duration;
+  const key=`${version}:${channel}:${start}`;
+  if(state.previewScan?.key===key){drawPreview();return;}
+  canvas.hidden=true;placeholder.hidden=false;placeholder.textContent='Preparing the sonar preview…';$('save-image').disabled=true;
   try{
-    const matches=frames.filter(f=>f.channel===5&&f.pingSize>1&&start<=f.timeMs/1000&&f.timeMs/1000<start+PREVIEW_SECONDS);
-    if(!matches.length)throw new Error('No side-scan pings in this interval');
+    if(channel==null)throw new Error('this recording has no sidescan or downscan pings');
+    const matches=frames.filter(f=>{const t=f.timeMs/1000-summary.start;return f.channel===channel&&f.pingSize>1&&start<=t&&t<start+PREVIEW_SECONDS;});
+    if(!matches.length)throw new Error(`no ${CHANNEL_LABELS[channel]} pings in this interval`);
     const width=Math.min(540,matches.length),height=240,reader=new FileWindow(sonar);
     const intensities=new Uint8Array(width*height),sample=[];
     for(let x=0;x<width;x++){
@@ -86,36 +102,37 @@ async function preview(){
       }
     }
     if(version!==state.version||previewVersion!==state.previewVersion)return;
-    sample.sort((a,b)=>a-b);const low=sample[Math.floor(sample.length*.02)],high=sample[Math.floor(sample.length*.98)];
-    canvas.width=width;canvas.height=height;
-    const context=canvas.getContext('2d'),image=context.createImageData(width,height);
-    for(let i=0;i<intensities.length;i++){
-      const contrast=(intensities[i]-low)/Math.max(1,high-low),[r,g,b]=color(Math.pow(Math.max(0,contrast),.8));
-      image.data[i*4]=r;image.data[i*4+1]=g;image.data[i*4+2]=b;image.data[i*4+3]=255;
-    }
-    context.putImageData(image,0,0);canvas.hidden=false;placeholder.hidden=true;
+    state.previewScan={key,intensities,width,height,sorted:sample.sort((a,b)=>a-b)};
+    drawPreview();
   }catch(error){if(version===state.version&&previewVersion===state.previewVersion){placeholder.textContent=`Preview unavailable: ${error.message}`;canvas.hidden=true;placeholder.hidden=false;}}
 }
 
 function resetAlignment(){
-  state.gps=null;state.sync=null;state.route=[];state.scanPoints=[];state.selectedScan=-1;state.aligning=false;
+  state.gps=null;state.sync=null;state.route=[];state.trackFixes=[];state.samples=[];state.scanPoints=[];state.selection=null;state.aligning=false;
+  resetSeabed('Match the sonar and GPS files, then build the model.');
   $('route-source').textContent='Waiting for files';
   $('route-status').textContent='Choose a sonar file and GPS logs to link the route to its scans.';
   $('scan-details').textContent='The scan time and GPS coordinates will appear here.';
   drawRoute();
 }
 
-function selectScan(index){
-  const scan=state.scanPoints[index];if(!scan)return;
-  state.selectedScan=index;
-  state.previewStart=Math.max(0,Math.min(Math.max(0,state.summary.duration-PREVIEW_SECONDS),scan.time-PREVIEW_SECONDS/2));
-  $('scan-details').textContent=`Scan ${index+1} · Recording time ${durationText(scan.time)} · GPS ${scan.lat.toFixed(6)}° N, ${Math.abs(scan.lon).toFixed(6)}° ${scan.lon<0?'W':'E'}`;
-  drawRoute();preview();
+// selection: {kind:'scan',index,time,lat,lon} for a numbered point, or {kind:'point',time,lat,lon} for a route click.
+function select(selection){
+  state.selection=selection;
+  state.previewStart=Math.max(0,Math.min(Math.max(0,state.summary.duration-PREVIEW_SECONDS),selection.time-PREVIEW_SECONDS/2));
+  const label=selection.kind==='scan'?`Scan ${selection.index+1}`:'Route point';
+  $('scan-details').textContent=`${label} · Recording time ${durationText(selection.time)} · GPS ${Math.abs(selection.lat).toFixed(6)}° ${selection.lat<0?'S':'N'}, ${Math.abs(selection.lon).toFixed(6)}° ${selection.lon<0?'W':'E'}`;
+  routeMap.select(selection);state.seabed.viewer?.select(selection.kind==='scan'?selection.index:-1);preview();ready();
+}
+function selectScan(index){const scan=state.scanPoints[index];if(scan)select({kind:'scan',index,time:scan.time,lat:scan.lat,lon:scan.lon});}
+function pickRoutePoint(lat,lon,slackM){
+  const nearest=nearestSample(state.samples,lat,lon);
+  if(nearest&&nearest.distanceM<=slackM){const {time,lat:sampleLat,lon:sampleLon}=nearest.sample;select({kind:'point',time,lat:sampleLat,lon:sampleLon});}
 }
 
 async function alignSelection(){
   if(!state.frames||!state.bins.length)return;
-  const token=++state.alignmentVersion,bins=[...state.bins],frames=state.frames;
+  const token=++state.alignmentVersion,bins=[...state.bins],frames=state.frames,summary=state.summary,channel=previewChannel(summary)??0;
   state.aligning=true;ready();$('route-source').textContent='Matching…';
   $('route-status').textContent='Reading GPS logs and matching their timeline to sonar…';
   try{
@@ -136,11 +153,12 @@ async function alignSelection(){
     const fixes=gps.fixes.filter(fix=>fix.t>=start&&fix.t<=end);
     if(fixes.length<2)throw new Error('Too few GPS fixes overlap this sonar recording');
     const route=fixes.length>500?Array.from({length:500},(_,i)=>fixes[Math.floor(i*(fixes.length-1)/499)]):fixes;
-    state.route=route.map(fix=>[fix.lon,fix.lat]);
+    state.route=route.map(fix=>[fix.lon,fix.lat]);state.trackFixes=fixes;
     const primary=frames.filter(f=>f.channel===0&&Number.isFinite(f.lon)&&Number.isFinite(f.lat)&&Math.abs(f.lon)<=180&&Math.abs(f.lat)<=90&&(f.lon!==0||f.lat!==0));
-    const sidescan=frames.filter(f=>f.channel===5&&f.pingSize>1),candidates=[];
-    const stride=Math.max(1,Math.floor(sidescan.length/1200));
-    for(let i=0;i<sidescan.length;i+=stride){const frame=sidescan[i],match=matchedGpsForFrame(frame,primary,gps,sync);if(match)candidates.push({frame,...match});}
+    const pings=frames.filter(f=>f.channel===channel&&f.pingSize>1),candidates=[];
+    const stride=Math.max(1,Math.floor(pings.length/1200));
+    for(let i=0;i<pings.length;i+=stride){const frame=pings[i],match=matchedGpsForFrame(frame,primary,gps,sync);if(match)candidates.push({frame,...match,time:match.time-summary.start});}
+    state.samples=candidates.map(({time,lat,lon})=>({time,lat,lon}));
     const points=candidates.length?[candidates[0]]:[];
     const metresBetween=(a,b)=>Math.hypot((a.lon-b.lon)*111320*Math.cos(a.lat*Math.PI/180),(a.lat-b.lat)*111320);
     while(points.length<Math.min(8,candidates.length)){
@@ -155,16 +173,17 @@ async function alignSelection(){
     }
     state.scanPoints=points.sort((a,b)=>a.time-b.time);
     $('route-source').textContent='ArduPilot BIN GPS';
-    $('route-status').textContent=points.length?`GPS and sonar matched automatically · ${points.length} scan points. Click a numbered point to view its image.`:'GPS and sonar matched, but no side-scan point passed the position check.';
+    $('route-status').textContent=points.length?`GPS and sonar matched automatically · ${points.length} scan points. Click a numbered point, or anywhere on the route, to view its scan.`:'GPS and sonar matched, but no scan point passed the position check.';
     drawRoute();if(points.length)selectScan(0);
     status('ready',`GPS match verified · ${points.length} linked sonar scans ready`);
   }catch(error){
-    if(token===state.alignmentVersion){state.gps=null;state.sync=null;state.route=[];state.scanPoints=[];state.selectedScan=-1;$('route-source').textContent='Match unavailable';$('route-status').textContent=`Could not match the files: ${error.message}`;drawRoute();status('error',`Could not match the files: ${error.message}`);}
+    if(token===state.alignmentVersion){state.gps=null;state.sync=null;state.route=[];state.trackFixes=[];state.samples=[];state.scanPoints=[];state.selection=null;$('route-source').textContent='Match unavailable';$('route-status').textContent=`Could not match the files: ${error.message}`;drawRoute();status('error',`Could not match the files: ${error.message}`);}
   }finally{if(token===state.alignmentVersion){state.aligning=false;ready();}}
 }
 
 async function chooseSonar(file){
-  const version=++state.version;state.alignmentVersion++;state.previewVersion++;state.sonar=file;state.frames=null;state.summary=null;resetAlignment();
+  const version=++state.version;state.alignmentVersion++;state.previewVersion++;state.sonar=file;state.frames=null;state.summary=null;state.previewScan=null;resetAlignment();
+  $('save-image').disabled=true;
   $('sonar-name').textContent=file?`${file.name} · ${sizeText(file.size)}`:'No file selected';
   $('sonar-name').title=file?.name||'';ready();
   if(!file){$('preview-placeholder').textContent='Choose a sonar file to see its echoes';return;}
@@ -173,12 +192,76 @@ async function chooseSonar(file){
     const frames=await scanSl3(file,fraction=>{if(version===state.version)status('working',`Reading SL3 frame headers · ${Math.round(fraction*100)}%`,fraction);});
     if(version!==state.version)return;
     state.frames=frames;state.summary=recordingSummary(frames);state.previewStart=state.summary.previewStart;
+    state.previewChannel=previewChannel(state.summary);channelChoices();
     details(state.summary);ready();status('ready',`${count(frames.length)} sonar frames ready · choose GPS logs to link scan points`);preview();
     if(state.bins.length)await alignSelection();
   }catch(error){if(version===state.version){status('error',`Could not read SL3 file: ${error.message}`);ready();}}
 }
 
-function setBins(files){state.alignmentVersion++;resetAlignment();state.bins=[...files];$('gps-name').textContent=state.bins.length?`${state.bins.length} GPS log${state.bins.length===1?'':'s'} selected`:'No files selected';const list=$('gps-list');list.replaceChildren();for(const file of state.bins){const item=document.createElement('span');item.textContent=`${file.name} · ${sizeText(file.size)}`;list.append(item);}ready();if(state.frames&&state.bins.length)alignSelection();}
+function setBins(files,{align=true}={}){state.alignmentVersion++;resetAlignment();state.bins=[...files];$('gps-name').textContent=state.bins.length?`${state.bins.length} GPS log${state.bins.length===1?'':'s'} selected`:'No files selected';const list=$('gps-list');list.replaceChildren();for(const file of state.bins){const item=document.createElement('span');item.textContent=`${file.name} · ${sizeText(file.size)}`;list.append(item);}ready();if(align&&state.frames&&state.bins.length)alignSelection();}
+
+// Dropped files are sorted by extension: one SL3 recording and any number of BIN logs.
+function dropFiles(files){
+  const note=$('drop-note'),sonars=files.filter(file=>/\.sl3$/i.test(file.name)),bins=files.filter(file=>/\.bin$/i.test(file.name));
+  const ignored=[...sonars.slice(1),...files.filter(file=>!/\.(sl3|bin)$/i.test(file.name))].map(file=>file.name);
+  if(state.busy||state.aligning){note.textContent='Wait for the current step to finish, then drop the files again.';note.hidden=false;return;}
+  note.textContent=ignored.length?`Ignored ${ignored.join(', ')}: drop one .sl3 recording and .BIN logs.`:'';note.hidden=!ignored.length;
+  if(bins.length)setBins(bins,{align:!sonars.length});
+  if(sonars.length)chooseSonar(sonars[0]);
+}
+
+const fileStem=()=>state.sonar.name.replace(/\.sl3$/i,'').replace(/[^\w.-]+/g,'_');
+// One-off download; the object URL is released once the browser has had time to start saving.
+function saveBlob(blob,name){const url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=name;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);}
+
+function saveImage(){
+  const selection=state.selection,time=selection?.time??state.previewStart;
+  const place=selection?`_${Math.abs(selection.lat).toFixed(5)}${selection.lat<0?'S':'N'}_${Math.abs(selection.lon).toFixed(5)}${selection.lon<0?'W':'E'}`:'';
+  $('sonar-canvas').toBlob(blob=>{if(blob)saveBlob(blob,`${fileStem()}_${CHANNEL_LABELS[state.previewChannel]}_${durationText(time).replaceAll(' ','')}${place}.png`);},'image/png');
+}
+
+function saveRoute(format){
+  const input={name:state.sonar.name,fixes:state.trackFixes,scans:state.scanPoints,offsetS:state.sync.offset_s,sonarStartS:state.summary.start,gpsOrigin:state.gps.origin};
+  if(format==='gpx')saveBlob(new Blob([trackGpx(input)],{type:'application/gpx+xml'}),`${fileStem()}_route.gpx`);
+  else saveBlob(new Blob([JSON.stringify(trackGeoJson(input),null,1)],{type:'application/geo+json'}),`${fileStem()}_route.geojson`);
+}
+
+// ---- 3D seabed model ----
+function seabedTools(enabled){
+  for(const id of ['seabed-exaggeration','seabed-reset','seabed-save'])$(id).disabled=!enabled;
+  document.querySelectorAll('input[name="seabed-texture"]').forEach(input=>{input.disabled=!enabled||input.value==='sonar'&&!state.seabed.model?.mosaic;});
+}
+function resetSeabed(message){
+  const seabed=state.seabed;seabed.version++;seabed.building=false;seabed.model=null;
+  seabed.viewer?.clear();$('seabed-empty').hidden=false;$('seabed-status').textContent=message;
+  $('seabed-summary').textContent='Sonar depth, sidescan and GPS combined';seabedTools(false);
+}
+async function buildSeabed(){
+  const seabed=state.seabed,version=++seabed.version,{sonar,frames,gps,sync,scanPoints}=state,line=$('seabed-status');
+  seabed.building=true;ready();seabedTools(false);
+  try{
+    line.textContent='Loading the 3D viewer…';
+    const {createSeabedViewer}=await import('./seabed-3d.js');
+    const model=await buildSeabedModel(sonar,frames,gps,sync,{scans:scanPoints,progress:fraction=>{if(version===seabed.version)line.textContent=`Building the seabed from sonar and GPS · ${Math.round(fraction*100)}%`;}});
+    if(version!==seabed.version)return;
+    try{seabed.viewer??=createSeabedViewer($('seabed-view'),{onSelectScan:index=>{selectScan(index);line.textContent=`Scan ${index+1} is shown in the Sonar scan panel.`;}});}
+    catch(error){throw /webgl/i.test(error.message)?new Error('this browser has WebGL turned off'):error;}
+    seabed.model=model;
+    // Start with enough vertical exaggeration for the relief to show: about a tenth of the survey's width.
+    const width=model.maxX-model.minX,height=model.maxY-model.minY,relief=Math.max(.5,model.maxDepth-model.minDepth);
+    const exaggeration=Math.min(20,Math.max(1,Math.round(Math.max(width,height)*.1/relief*2)/2));
+    $('seabed-exaggeration').value=String(exaggeration);$('seabed-exaggeration-value').textContent=`${exaggeration}×`;
+    const texture=model.mosaic?'sonar':'depth';
+    document.querySelectorAll('input[name="seabed-texture"]').forEach(input=>{input.checked=input.value===texture;});
+    $('seabed-empty').hidden=true;
+    seabed.viewer.show(model,{exaggeration,texture});
+    seabed.viewer.select(state.selection?.kind==='scan'?state.selection.index:-1);
+    $('seabed-summary').textContent=`${Math.round(width)} × ${Math.round(height)} m · depth ${model.minDepth.toFixed(1)}–${model.maxDepth.toFixed(1)} m${model.mosaic?' · sidescan mosaic':' · no sidescan'}`;
+    line.textContent=`Built from ${count(model.soundings)} depth readings${model.mosaic?` and ${count(model.mosaic.pings)} sidescan pings`:''}. Drag to rotate; click a numbered point to preview its scan.`;
+    seabedTools(true);
+  }catch(error){if(version===seabed.version){line.textContent=`Could not build the 3D model: ${error.message}`;$('seabed-empty').hidden=false;}}
+  finally{if(version===seabed.version){seabed.building=false;ready();}}
+}
 
 function downloadBlob(blob,name,label){const url=URL.createObjectURL(blob);state.urls.push(url);const link=document.createElement('a');link.href=url;link.download=name;link.textContent=label;return link;}
 
@@ -193,7 +276,7 @@ async function exportFiles(){
   try{
     status('working','Writing GPS-linked sonar CSV…',0);
     const {csv,report}=await exportAligned(sonar,frames,gps,sync,{channels,start,duration,binNames:bins.map(file=>file.name)},fraction=>status('working',`Writing aligned pings · ${Math.round(fraction*100)}%`,fraction));
-    const stem=sonar.name.replace(/\.sl3$/i,'').replace(/[^\w.-]+/g,'_');
+    const stem=fileStem();
     status('complete',`Export complete · ${count(report.exported_pings)} sonar pings aligned`);
     const links=document.createElement('div');links.className='result-links';
     links.append(downloadBlob(csv,`${stem}_aligned.csv`,'Download aligned CSV'));
@@ -206,11 +289,40 @@ async function exportFiles(){
   finally{state.busy=false;ready();}
 }
 
-$('sonar-input').addEventListener('change',event=>chooseSonar(event.target.files[0]||null));
-$('gps-input').addEventListener('change',event=>setBins(event.target.files));
+const routeMap=createRouteMap($('route-map'),{onSelectScan:selectScan,onPick:pickRoutePoint});
+// The map background is opt-in; remember the choice in this browser only.
+const BASEMAP_KEY='sonar-studio-basemap';
+function setBasemap(on){
+  routeMap.setBasemap(on);$('basemap-toggle').checked=on;
+  $('basemap-note').textContent=on?'Map © OpenStreetMap contributors':'Diagram of GPS track · no basemap';
+  try{if(on)localStorage.setItem(BASEMAP_KEY,'1');else localStorage.removeItem(BASEMAP_KEY);}catch{}
+}
+try{if(localStorage.getItem(BASEMAP_KEY)==='1')setBasemap(true);}catch{}
+$('basemap-toggle').addEventListener('change',event=>setBasemap(event.target.checked));
+// A dialog that ends with no files (cancelled, or cleared by the browser) keeps the files already loaded.
+$('sonar-input').addEventListener('change',event=>{if(event.target.files.length)chooseSonar(event.target.files[0]);});
+$('gps-input').addEventListener('change',event=>{if(event.target.files.length)setBins(event.target.files);});
 $('entire-file').addEventListener('change',event=>{$('start-seconds').disabled=event.target.checked;$('duration-seconds').disabled=event.target.checked;});
 document.querySelectorAll('#channel-list input').forEach(input=>input.addEventListener('change',ready));
 $('export-button').addEventListener('click',exportFiles);
-$('preview-previous').addEventListener('click',()=>{if(state.scanPoints.length)selectScan(state.selectedScan-1);else{state.previewStart=Math.max(0,state.previewStart-PREVIEW_SECONDS);preview();}});
-$('preview-next').addEventListener('click',()=>{if(state.scanPoints.length)selectScan(state.selectedScan+1);else{state.previewStart=Math.min(Math.max(0,state.summary.duration-PREVIEW_SECONDS),state.previewStart+PREVIEW_SECONDS);preview();}});
+$('use-preview-window').addEventListener('click',()=>{
+  const {start,end}=state.previewWindow;
+  $('entire-file').checked=false;$('start-seconds').value=String(start);$('duration-seconds').value=String(end-start);ready();
+});
+const dragHasFiles=event=>[...(event.dataTransfer?.types??[])].includes('Files');
+document.addEventListener('dragover',event=>{if(!dragHasFiles(event))return;event.preventDefault();event.dataTransfer.dropEffect='copy';$('drop-overlay').hidden=false;});
+document.addEventListener('dragleave',event=>{if(!event.relatedTarget)$('drop-overlay').hidden=true;});
+document.addEventListener('drop',event=>{if(!dragHasFiles(event))return;event.preventDefault();$('drop-overlay').hidden=true;dropFiles([...event.dataTransfer.files]);});
+$('preview-previous').addEventListener('click',()=>{if(state.scanPoints.length)selectScan(neighbourScan(-1));else{state.previewStart=Math.max(0,state.previewStart-PREVIEW_SECONDS);preview();}});
+$('preview-next').addEventListener('click',()=>{if(state.scanPoints.length)selectScan(neighbourScan(1));else{state.previewStart=Math.min(Math.max(0,state.summary.duration-PREVIEW_SECONDS),state.previewStart+PREVIEW_SECONDS);preview();}});
+document.querySelectorAll('input[name="preview-channel"]').forEach(input=>input.addEventListener('change',()=>{state.previewChannel=Number(input.value);preview();}));
+for(const id of ['preview-contrast','preview-brightness'])$(id).addEventListener('input',()=>{if(state.previewScan&&!$('sonar-canvas').hidden)drawPreview();});
+$('save-image').addEventListener('click',saveImage);
+$('download-gpx').addEventListener('click',()=>saveRoute('gpx'));
+$('build-seabed').addEventListener('click',buildSeabed);
+$('seabed-exaggeration').addEventListener('input',event=>{const value=Number(event.target.value);$('seabed-exaggeration-value').textContent=`${value}×`;state.seabed.viewer?.setExaggeration(value);});
+document.querySelectorAll('input[name="seabed-texture"]').forEach(input=>input.addEventListener('change',()=>state.seabed.viewer?.setTexture(input.value)));
+$('seabed-reset').addEventListener('click',()=>state.seabed.viewer?.resetView());
+$('seabed-save').addEventListener('click',async()=>{const blob=await state.seabed.viewer?.toBlob();if(blob)saveBlob(blob,`${fileStem()}_seabed_3d.png`);});
+$('download-geojson').addEventListener('click',()=>saveRoute('geojson'));
 window.addEventListener('beforeunload',()=>state.urls.forEach(url=>URL.revokeObjectURL(url)));

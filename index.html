@@ -7,7 +7,10 @@
   <meta name="description" content="Match Lowrance SL3 sonar scans to ArduPilot BIN GPS tracks and explore each scan on an interactive route.">
   <title>Sonar Studio Web — Explore sonar on a GPS route</title>
   <link rel="icon" type="image/svg+xml" href="./favicon.svg">
+  <link rel="stylesheet" href="./vendor/leaflet/leaflet.css">
   <link rel="stylesheet" href="./app.css">
+  <script defer src="./vendor/leaflet/leaflet.js"></script>
+  <script type="importmap">{"imports":{"three":"./vendor/three/three.module.js"}}</script>
   <script type="module" src="./app.js"></script>
 </head>
 <body>
@@ -21,13 +24,13 @@
     <div class="workbench">
       <div class="workflow">
         <section class="step" aria-labelledby="sonar-title"><div class="step-number" aria-hidden="true">1</div><div class="step-body">
-          <h2 id="sonar-title">Choose a sonar file</h2><p class="step-hint">Select one Lowrance .sl3 recording from your computer.</p>
+          <h2 id="sonar-title">Choose a sonar file</h2><p class="step-hint">Select one Lowrance .sl3 recording, or drop it anywhere on this page.</p>
           <label class="file-picker"><input id="sonar-input" type="file" accept=".sl3"><span class="picker-action">Browse for SL3</span><span id="sonar-name" class="picker-name">No file selected</span></label>
         </div></section>
         <section class="step" aria-labelledby="gps-title"><div class="step-number" aria-hidden="true">2</div><div class="step-body">
-          <h2 id="gps-title">Choose GPS logs</h2><p class="step-hint">Select one or more ArduPilot .BIN logs. The timeline matches automatically after both files are selected.</p>
+          <h2 id="gps-title">Choose GPS logs</h2><p class="step-hint">Select or drop one or more ArduPilot .BIN logs. The timeline matches automatically after both files are selected.</p>
           <label class="file-picker"><input id="gps-input" type="file" accept=".bin,.BIN" multiple><span class="picker-action">Browse for BIN logs</span><span id="gps-name" class="picker-name">No files selected</span></label>
-          <div id="gps-list" class="selected-files" aria-live="polite"></div>
+          <div id="gps-list" class="selected-files" aria-live="polite"></div><p id="drop-note" class="drop-note" aria-live="polite" hidden></p>
         </div></section>
         <section class="step" aria-labelledby="channels-title"><div class="step-number" aria-hidden="true">3</div><div class="step-body">
           <h2 id="channels-title">Choose sonar channels</h2><p class="step-hint">Select the channels to include in the CSV export.</p>
@@ -39,7 +42,7 @@
         </div></section>
         <section class="step" aria-labelledby="range-title"><div class="step-number" aria-hidden="true">4</div><div class="step-body">
           <h2 id="range-title">Set time range</h2><p class="step-hint">Use the entire recording, or export a shorter interval in seconds from its start.</p>
-          <label class="whole-file"><input id="entire-file" type="checkbox" checked> Entire recording</label>
+          <div class="range-options"><label class="whole-file"><input id="entire-file" type="checkbox" checked> Entire recording</label><button type="button" id="use-preview-window" class="tool-button" disabled>Use preview window</button></div>
           <div class="time-fields"><label>Start (seconds)<input id="start-seconds" type="number" min="0" step="1" value="0" disabled></label><label>Duration (seconds)<input id="duration-seconds" type="number" min="1" step="1" value="180" disabled></label></div>
         </div></section>
         <div class="action-row"><button type="button" class="primary-button" id="export-button" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 17v3h16v-3"/></svg>Export aligned data</button><span id="export-readiness">Choose a sonar file and GPS logs</span></div>
@@ -48,11 +51,26 @@
       </div>
 
       <aside class="insights" aria-label="Data preview">
-        <section class="insight-panel route-panel" aria-labelledby="route-title"><div class="panel-heading"><h2 id="route-title">GPS track &amp; sonar scans</h2><span id="route-source">Waiting for files</span></div><p id="route-status" class="route-status" aria-live="polite">Choose a sonar file and GPS logs to link the route to its scans.</p><div class="route-graphic"><svg id="route-svg" viewBox="0 0 500 260" role="group" aria-label="GPS track with clickable sonar scan points"><text x="250" y="130" text-anchor="middle" class="route-empty">Choose files to see the route</text></svg></div><div class="route-legend"><span><i class="route-start"></i>Start</span><span><i class="route-end"></i>End</span><span>Diagram of GPS track · no basemap</span></div></section>
-        <section class="insight-panel sonar-panel" aria-labelledby="preview-title"><div class="panel-heading"><h2 id="preview-title">Sonar scan</h2><span>Enhanced sidescan</span></div><div class="preview-frame"><canvas id="sonar-canvas" role="img" aria-label="Enhanced side-scan image for the selected GPS scan point" hidden></canvas><span class="preview-placeholder" id="preview-placeholder">Choose a sonar file to see its echoes</span></div><div class="preview-footer"><span id="preview-caption">Choose a numbered route point to view its scan</span><div class="preview-controls"><button type="button" id="preview-previous" aria-label="Previous scan point" disabled>‹</button><button type="button" id="preview-next" aria-label="Next scan point" disabled>›</button></div></div><div id="scan-details" class="scan-details" aria-live="polite">The scan time and GPS coordinates will appear here.</div><p class="preview-guide">Bright bands show stronger echoes. The dark center band is directly beneath the boat. Colors are enhanced for display.</p></section>
-        <section class="insight-panel details-panel" aria-labelledby="details-title"><div class="panel-heading"><h2 id="details-title">Recording details</h2></div><dl id="recording-details"><div><dt>Duration</dt><dd>—</dd></div><div><dt>Primary pings</dt><dd>—</dd></div><div><dt>Typical recorded depth</dt><dd>—</dd></div></dl><p class="details-note">GPS and sonar tracks are checked together before scan points are shown.</p></section>
+        <section class="insight-panel route-panel" aria-labelledby="route-title"><div class="panel-heading"><h2 id="route-title">GPS track &amp; sonar scans</h2><span id="route-source">Waiting for files</span></div><p id="route-status" class="route-status" aria-live="polite">Choose a sonar file and GPS logs to link the route to its scans.</p><div class="route-graphic"><div id="route-map" class="route-map" role="region" aria-label="Map of the GPS track with clickable sonar scan points"></div><p class="route-empty">Choose files to see the route</p></div><div class="route-legend"><span><i class="route-start"></i>Start</span><span><i class="route-end"></i>End</span><span id="basemap-note">Diagram of GPS track · no basemap</span></div><div class="route-downloads"><span>Download route and scan points</span><button type="button" id="download-gpx" class="tool-button" disabled>GPX</button><button type="button" id="download-geojson" class="tool-button" disabled>GeoJSON</button></div><label class="basemap-toggle"><input id="basemap-toggle" type="checkbox"><span><strong>Map background</strong> Loads OpenStreetMap tiles, so OpenStreetMap sees which area you view. Your files still stay in this browser.</span></label></section>
+        <section class="insight-panel sonar-panel" aria-labelledby="preview-title"><div class="panel-heading"><h2 id="preview-title">Sonar scan</h2><span id="preview-channel">Enhanced sidescan</span></div><div class="preview-frame"><canvas id="sonar-canvas" role="img" aria-label="Enhanced sonar image for the selected GPS scan point" hidden></canvas><span class="preview-placeholder" id="preview-placeholder">Choose a sonar file to see its echoes</span></div><div class="preview-footer"><span id="preview-caption">Choose a numbered route point to view its scan</span><div class="preview-controls"><button type="button" id="preview-previous" aria-label="Previous scan point" disabled>‹</button><button type="button" id="preview-next" aria-label="Next scan point" disabled>›</button></div></div><div id="scan-details" class="scan-details" aria-live="polite">The scan time and GPS coordinates will appear here.</div><div class="preview-tools"><div class="segmented" role="radiogroup" aria-label="Sonar channel to preview"><label><input type="radio" name="preview-channel" value="5" checked><span>Sidescan</span></label><label><input type="radio" name="preview-channel" value="2"><span>Downscan</span></label></div><label class="slider">Contrast<input id="preview-contrast" type="range" min="0" max="100" value="50"></label><label class="slider">Brightness<input id="preview-brightness" type="range" min="0" max="100" value="50"></label><button type="button" id="save-image" class="tool-button" disabled>Save PNG</button></div><p class="preview-guide" id="preview-guide">Bright bands show stronger echoes. The dark center band is directly beneath the boat. Colors are enhanced for display.</p></section>
+        <section class="insight-panel details-panel" aria-labelledby="details-title"><div class="panel-heading"><h2 id="details-title">Recording details</h2></div><dl id="recording-details"><div><dt>Duration</dt><dd>—</dd></div><div><dt>Primary pings</dt><dd>—</dd></div><div><dt>Downscan pings</dt><dd>—</dd></div><div><dt>Sidescan pings</dt><dd>—</dd></div><div><dt>Typical recorded depth</dt><dd>—</dd></div></dl><p class="details-note">GPS and sonar tracks are checked together before scan points are shown.</p></section>
       </aside>
     </div>
+
+    <section class="insight-panel seabed-panel" aria-labelledby="seabed-title">
+      <div class="panel-heading"><h2 id="seabed-title">3D seabed model</h2><span id="seabed-summary">Sonar depth, sidescan and GPS combined</span></div>
+      <p id="seabed-status" class="route-status" aria-live="polite">Match the sonar and GPS files, then build the model.</p>
+      <div id="seabed-view" class="seabed-view"><p class="route-empty seabed-empty" id="seabed-empty">Build the model to explore the seabed in 3D</p></div>
+      <div class="seabed-tools">
+        <button type="button" id="build-seabed" class="primary-button compact" disabled>Build 3D model</button>
+        <div class="segmented" role="radiogroup" aria-label="Seabed colouring"><label><input type="radio" name="seabed-texture" value="sonar" checked disabled><span>Sonar texture</span></label><label><input type="radio" name="seabed-texture" value="depth" disabled><span>Depth colours</span></label></div>
+        <label class="slider">Vertical exaggeration<input id="seabed-exaggeration" type="range" min="1" max="20" step="0.5" value="5" disabled><output id="seabed-exaggeration-value" for="seabed-exaggeration">5×</output></label>
+        <button type="button" id="seabed-reset" class="tool-button" disabled>Reset view</button>
+        <button type="button" id="seabed-save" class="tool-button" disabled>Save PNG</button>
+      </div>
+      <p class="preview-guide">Drag to rotate, scroll or pinch to zoom, and right-drag or use two fingers to pan. Click a numbered point to show its scan in the Sonar scan panel. Depth comes from the primary sonar along the route and is interpolated between survey lines. The sonar texture lays each sidescan ping across the track, assuming a flat seabed. Not for navigation.</p>
+    </section>
   </main>
+  <div id="drop-overlay" class="drop-overlay" hidden><div>Drop SL3 and BIN files to load them</div></div>
 </body>
 </html>
