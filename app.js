@@ -1,11 +1,13 @@
 import {FileWindow,scanSl3,scanBin,combineFixes,findAlignment,matchedGpsForFrame,nearestSample,exportAligned,recordingSummary,trackGeoJson,trackGpx} from './engine.js';
 import {buildSeabedModel,seabedDepthAt,seabedBaseAt} from './reconstruct.js';
+import {inspectLining,candidatesGeoJson} from './inspect.js';
+import {createInspectView,CRACK_COLOURS} from './inspect-view.js';
 import {createRouteMap} from './route-map.js';
 import {renderScan} from './scan-image.js';
 
 const $=id=>document.getElementById(id);
 const PREVIEW_SECONDS=30;
-const state={sonar:null,bins:[],frames:null,summary:null,gps:null,sync:null,route:[],trackFixes:[],samples:[],scanPoints:[],selection:null,previewStart:0,previewWindow:null,previewChannel:null,previewScan:null,version:0,alignmentVersion:0,previewVersion:0,aligning:false,busy:false,urls:[],seabed:{viewer:null,module:null,model:null,building:false,version:0,selectedObject:-1}};
+const state={sonar:null,bins:[],frames:null,summary:null,gps:null,sync:null,route:[],trackFixes:[],samples:[],scanPoints:[],selection:null,previewStart:0,previewWindow:null,previewChannel:null,previewScan:null,version:0,alignmentVersion:0,previewVersion:0,aligning:false,busy:false,urls:[],seabed:{viewer:null,module:null,model:null,building:false,version:0,selectedObject:-1},cracks:{view:null,result:null,running:false,version:0,selected:-1}};
 const count=value=>Number(value||0).toLocaleString('en-US');
 const durationText=seconds=>{const s=Math.max(0,Math.round(seconds));return `${Math.floor(s/3600)}h ${String(Math.floor(s%3600/60)).padStart(2,'0')}m ${String(s%60).padStart(2,'0')}s`;};
 const clockText=seconds=>{const s=Math.max(0,Math.round(seconds)),h=Math.floor(s/3600),m=Math.floor(s%3600/60),rest=String(s%60).padStart(2,'0');return h?`${h}:${String(m).padStart(2,'0')}:${rest}`:`${m}:${rest}`;};
@@ -21,6 +23,7 @@ const metresBetween=(a,b)=>Math.hypot((a.lon-b.lon)*111320*Math.cos(a.lat*Math.P
 function setStatus(id,text,state='idle'){const line=$(id);line.textContent=text;line.dataset.state=state;}
 const routeStatus=(text,state)=>setStatus('route-status',text,state);
 const seabedStatus=(text,state)=>setStatus('seabed-status',text,state);
+const crackStatus=(text,state)=>setStatus('crack-status',text,state);
 
 function status(mode,message,progress=null){
   const panel=$('results');panel.className=`results is-${mode}`;
@@ -42,6 +45,7 @@ function ready(){
   $('gps-name').closest('.file-picker').toggleAttribute('data-loaded',state.bins.length>0);
   $('download-gpx').disabled=$('download-geojson').disabled=!(state.trackFixes.length>=2&&!state.aligning);
   $('build-seabed').disabled=$('seabed-stretch').disabled=!(state.sync?.trusted&&state.trackFixes.length>=2&&!state.aligning&&!state.busy&&!state.seabed.building);
+  $('find-cracks').disabled=$('crack-stretch').disabled=!(state.sync?.trusted&&state.trackFixes.length>=2&&!state.aligning&&!state.busy&&!state.cracks.running);
   $('sonar-input').disabled=state.busy||state.aligning;$('gps-input').disabled=state.busy||state.aligning;
   $('entire-file').disabled=state.busy;
   $('use-preview-window').disabled=state.busy||!state.selection;
@@ -122,6 +126,7 @@ async function preview(){
 function resetAlignment(){
   state.gps=null;state.sync=null;state.route=[];state.trackFixes=[];state.samples=[];state.scanPoints=[];state.selection=null;state.aligning=false;
   resetSeabed('Match the sonar and GPS files, then build the model.');
+  resetCracks('Match the sonar and GPS files, then select a point on the route to screen the canal around it.');
   $('route-source').textContent='Waiting for files';
   routeStatus('Choose a sonar file and GPS logs to link the route to its scans.');
   $('scan-details').textContent='The scan time and GPS coordinates will appear here.';
@@ -134,9 +139,11 @@ function select(selection){
   state.selection=selection;
   state.previewStart=Math.max(0,Math.min(Math.max(0,state.summary.duration-PREVIEW_SECONDS),selection.time-PREVIEW_SECONDS/2));
   const object=selection.object!=null?state.seabed.model?.objects[selection.object]:null;
-  const label=selection.kind==='scan'?`Scan ${selection.index+1}`:object?`Object ${object.id}`:'Route point';
+  const crack=selection.crack!=null?state.cracks.result?.candidates[selection.crack]:null;
+  const label=selection.kind==='scan'?`Scan ${selection.index+1}`:object?`Object ${object.id}`:crack?`Crack candidate ${crack.id}`:'Route point';
   $('scan-details').textContent=`${label} · Recording time ${durationText(selection.time)} · GPS ${Math.abs(selection.lat).toFixed(6)}° ${selection.lat<0?'S':'N'}, ${Math.abs(selection.lon).toFixed(6)}° ${selection.lon<0?'W':'E'}`;
   if(!object)markObject(-1);
+  if(!crack)markCrack(-1);
   routeMap.select(selection);state.seabed.viewer?.select(selection.kind==='scan'?selection.index:-1);updateSection();preview();ready();
 }
 function selectScan(index){const scan=state.scanPoints[index];if(scan)select({kind:'scan',index,time:scan.time,lat:scan.lat,lon:scan.lon});}
@@ -258,8 +265,8 @@ function resetSeabed(message){
 
 // The stretch to model: the chosen length of route centred on the selected point (or the preview
 // window), as recording times from the first ping. null means the whole recording.
-function stretchRange(){
-  const choice=$('seabed-stretch').value,samples=state.samples;
+function stretchRange(choice){
+  const samples=state.samples;
   if(choice==='all'||samples.length<2)return null;
   // Distance along the route, stepping at least 3 m at a time so GPS jitter does not add up.
   const along=[0];let last=samples[0],base=0;
@@ -281,7 +288,7 @@ function defaultExaggeration(model){
 
 async function buildSeabed(){
   const seabed=state.seabed,version=++seabed.version,{sonar,frames,gps,sync,scanPoints,summary}=state;
-  const stretch=stretchRange(),settings={draftM:Number($('seabed-draft').value),sensitivity:Number($('seabed-sensitivity').value),shading:Number($('seabed-shading').value)};
+  const stretch=stretchRange($('seabed-stretch').value),settings={draftM:Number($('seabed-draft').value),sensitivity:Number($('seabed-sensitivity').value),shading:Number($('seabed-shading').value)};
   seabed.building=true;ready();seabedTools(false);
   try{
     seabedStatus('Loading the 3D viewer…','working');
@@ -304,6 +311,7 @@ async function buildSeabed(){
     seabedStatus(`Built from ${count(model.pingsUsed)} ${model.mosaic?'sidescan pings':'soundings'} · ${banks}. Drag to rotate; click an object or a numbered point.`,'ok');
     $('build-seabed-label').textContent='Rebuild 3D model';
     drawLegend();drawObjects();updateSection();seabedTools(true);
+    seabed.viewer.setLines(crackLines());
   }catch(error){if(version===seabed.version){seabedStatus(`Could not build the 3D model: ${error.message}`,'error');$('seabed-empty').hidden=false;}}
   finally{if(version===seabed.version){seabed.building=false;ready();}}
 }
@@ -449,6 +457,83 @@ function drawSectionChart(chart,{points,section,objects,port,starboard,width}){
   $('section-caption').textContent=`${label}${width?` · ${width.toFixed(1)} m wide at the waterline`:''} · depth drawn ${verticalScale>=1.5?`${verticalScale.toFixed(0)}× exaggerated`:'to scale'}`;
 }
 
+// ---- Crack screening ----
+const CRACK_LEVELS={high:'High',medium:'Medium',low:'Low'};
+const crackColour=c=>c.kind==='joint'?CRACK_COLOURS.joint:c.polarity==='bright'?CRACK_COLOURS.edge:CRACK_COLOURS.crack;
+function crackLabel(c){
+  if(c.kind==='joint')return 'Joint';
+  if(c.kind==='edge')return 'Lit edge';
+  if(c.kind==='step')return c.detail.startsWith('raised')?'Raised edge':'Step up';
+  return c.detail.startsWith('open crack')?'Open crack':c.direction==='along'?'Crack or step down':'Crack';
+}
+const shownCracks=()=>(state.cracks.result?.candidates??[]).map((c,index)=>({c,index})).filter(({c,index})=>c.confidence!=='low'||$('crack-show-low').checked||index===state.cracks.selected);
+const crackLines=()=>shownCracks().map(({c,index})=>({local:c.local,colour:crackColour(c),selected:index===state.cracks.selected}));
+function crackTools(enabled){for(const id of ['crack-contrast','crack-show-low','crack-download'])$(id).disabled=!enabled||!state.cracks.result;}
+function resetCracks(message){
+  const cracks=state.cracks;cracks.version++;cracks.running=false;cracks.result=null;cracks.selected=-1;
+  cracks.view?.clear();$('crack-empty').hidden=false;crackStatus(message);
+  $('crack-summary').textContent='Possible cracks, joints and displaced panels in the lining';$('find-cracks-label').textContent='Find possible cracks';
+  $('crack-table').tBodies[0].replaceChildren();$('crack-legend').replaceChildren();crackTools(false);
+  state.seabed.viewer?.setLines([]);
+}
+async function findCracks(){
+  const cracks=state.cracks,version=++cracks.version,{sonar,frames,gps,sync,summary}=state,stretch=stretchRange($('crack-stretch').value);
+  cracks.running=true;ready();crackTools(false);
+  try{
+    const timeRange=stretch&&[stretch.start+summary.start,stretch.end+summary.start];
+    const result=await inspectLining(sonar,frames,gps,sync,{timeRange,draftM:Number($('seabed-draft').value),sensitivity:Number($('crack-sensitivity').value),minLengthM:Number($('crack-min-length').value),
+      progress:fraction=>{if(version===cracks.version)crackStatus(`Screening the lining at full detail · ${Math.round(fraction*100)}%`,'working');}});
+    if(version!==cracks.version)return;
+    cracks.result=result;cracks.selected=-1;
+    cracks.view??=createInspectView($('crack-view'),{onSelect:selectCrack,onPick:pickTime});
+    $('crack-empty').hidden=true;
+    cracks.view.setContrast(Number($('crack-contrast').value));cracks.view.setShowLow($('crack-show-low').checked);cracks.view.show(result);
+    const count=level=>result.candidates.filter(c=>c.confidence===level).length;
+    $('crack-summary').textContent=`${Math.round(result.stats.lengthM)} m screened · ${count('high')} high and ${count('medium')} medium confidence`;
+    crackStatus(`Screened ${count('high')+count('medium')?`${Math.round(result.stats.lengthM)} m of canal: ${count('high')} high and ${count('medium')} medium-confidence lines to check`:`${Math.round(result.stats.lengthM)} m of canal: no clear lines`}${count('low')?` · ${count('low')} faint lines hidden`:''}. Click a line or a row to see its scan.`,'ok');
+    $('find-cracks-label').textContent='Screen again';
+    drawCracks();drawCrackLegend();crackTools(true);
+    state.seabed.viewer?.setLines(crackLines());
+  }catch(error){if(version===cracks.version){crackStatus(`Could not screen this stretch: ${error.message}`,'error');}}
+  finally{if(version===cracks.version){cracks.running=false;ready();}}
+}
+function drawCracks(){
+  const body=$('crack-table').tBodies[0];body.replaceChildren();
+  for(const {c,index} of shownCracks()){
+    const row=body.insertRow();row.tabIndex=0;row.dataset.index=String(index);row.setAttribute('aria-selected',String(index===state.cracks.selected));
+    row.insertCell().textContent=String(c.id);
+    const what=row.insertCell(),kind=document.createElement('span'),mark=document.createElement('i');kind.className='kind';mark.style.setProperty('--mark',crackColour(c));kind.append(mark,document.createTextNode(crackLabel(c)));what.append(kind);
+    for(const text of [c.direction==='along'?'Along':c.direction==='across'?'Across':'Diagonal',`${c.lengthM.toFixed(1)} m`,c.sizeCm!=null?`≈${c.sizeCm} cm`:'—',c.side==='both'?'Both sides':`${c.offsetM.toFixed(1)} m ${c.side}`,`${Math.round(c.alongM)} m`])row.insertCell().textContent=text;
+    const level=row.insertCell(),span=document.createElement('span');span.className=`level level-${c.confidence}`;span.append(document.createElement('i'),document.createTextNode(CRACK_LEVELS[c.confidence]));level.append(span);
+    row.title=`${c.id}: ${c.detail}`;
+  }
+}
+function drawCrackLegend(){
+  const box=$('crack-legend');box.replaceChildren();
+  const key=(style,text)=>{const span=document.createElement('span'),i=document.createElement('i');span.className='key';i.className='chip chip-line';i.style.setProperty('--mark',style.colour);if(style.dash)i.dataset.dash=style.dash;span.append(i,document.createTextNode(text));box.append(span);};
+  key({colour:CRACK_COLOURS.crack},'Dark line: crack, gap or shadow');key({colour:CRACK_COLOURS.joint},'Joint');key({colour:CRACK_COLOURS.edge},'Lit edge');
+  for(const [dash,text] of [['solid','High confidence'],['dashed','Medium'],['dotted','Low']])key({colour:'var(--viz-ink)',dash},text);
+}
+function markCrack(index){
+  state.cracks.selected=index;
+  for(const row of $('crack-table').tBodies[0].rows)row.setAttribute('aria-selected',String(Number(row.dataset.index)===index));
+  if(state.cracks.result){state.cracks.view?.select(index);state.seabed.viewer?.setLines(crackLines());}
+}
+function selectCrack(index){
+  const c=state.cracks.result?.candidates[index];if(!c)return;
+  markCrack(index);drawCracks();
+  const [[lon0,lat0],[lon1,lat1]]=c.lonlat;
+  select({kind:'point',time:c.time-state.summary.start,lat:(lat0+lat1)/2,lon:(lon0+lon1)/2,crack:index});
+  const [[x0,y0],[x1,y1]]=c.local;state.seabed.viewer?.focusPoint((x0+x1)/2,(y0+y1)/2);
+  crackStatus(`Line ${c.id}: ${c.detail}, ${c.lengthM.toFixed(1)} m long. Its scan is in the Sonar scan panel.`,'ok');
+}
+// A click on the inspection image shows the scan recorded there.
+function pickTime(time){
+  const t=time-state.summary.start,samples=state.samples;if(!samples.length)return;
+  const nearest=samples.reduce((best,s)=>Math.abs(s.time-t)<Math.abs(best.time-t)?s:best);
+  select({kind:'point',time:t,lat:nearest.lat,lon:nearest.lon});
+}
+
 function downloadBlob(blob,name,label){const url=URL.createObjectURL(blob);state.urls.push(url);const link=document.createElement('a');link.href=url;link.download=name;link.textContent=label;return link;}
 
 async function exportFiles(){
@@ -525,6 +610,18 @@ for(const [id,format] of [['seabed-draft',v=>`${v.toFixed(2)} m`],['seabed-sensi
 }
 // Redraw the cross-section when its panel changes width.
 {let width=0;new ResizeObserver(([entry])=>{const next=Math.round(entry.contentRect.width);if(Math.abs(next-width)>16&&state.seabed.model){width=next;updateSection();}else width=next;}).observe($('section-chart'));}
+$('find-cracks').addEventListener('click',findCracks);
+for(const [id,format] of [['crack-sensitivity',v=>`${Math.round(v*100)}%`],['crack-min-length',v=>`${v.toFixed(1)} m`]]){
+  $(id).addEventListener('input',event=>{$(`${id}-value`).textContent=format(Number(event.target.value));if(state.cracks.result)crackStatus('Settings changed · screen again to apply them.','warn');});
+}
+$('crack-contrast').addEventListener('input',event=>{$('crack-contrast-value').textContent=event.target.value;state.cracks.view?.setContrast(Number(event.target.value));});
+$('crack-show-low').addEventListener('change',event=>{state.cracks.view?.setShowLow(event.target.checked);drawCracks();state.seabed.viewer?.setLines(crackLines());});
+// The download holds the lines listed in the table (faint ones only while they are shown).
+$('crack-download').addEventListener('click',()=>{const result=state.cracks.result;if(result)saveBlob(new Blob([JSON.stringify(candidatesGeoJson({...result,candidates:shownCracks().map(({c})=>c)},{name:state.sonar.name}),null,1)],{type:'application/geo+json'}),`${fileStem()}_crack_candidates.geojson`);});
+$('crack-table').addEventListener('click',event=>{const row=event.target.closest('tr[data-index]');if(row)selectCrack(Number(row.dataset.index));});
+$('crack-table').addEventListener('keydown',event=>{const row=event.target.closest('tr[data-index]');if(!row)return;
+  if(event.key==='Enter'||event.key===' '){event.preventDefault();selectCrack(Number(row.dataset.index));}
+  else if(event.key==='ArrowDown'||event.key==='ArrowUp'){event.preventDefault();(event.key==='ArrowDown'?row.nextElementSibling:row.previousElementSibling)?.focus();}});
 $('objects-table').addEventListener('click',event=>{const row=event.target.closest('tr[data-index]');if(row)selectObject(Number(row.dataset.index));});
 $('objects-table').addEventListener('keydown',event=>{const row=event.target.closest('tr[data-index]');if(!row)return;
   if(event.key==='Enter'||event.key===' '){event.preventDefault();selectObject(Number(row.dataset.index));}

@@ -16,7 +16,7 @@ export const SOURCE={none:0,measured:1,bed:2,bank:3,bankAssumed:4,object:5,depre
 const RANK=[0,6,2,4,3,7,7,1];   // a cell reached by several pings keeps its most specific source
 
 export const localMetres=origin=>{const c=Math.cos(origin.lat*Math.PI/180);return (lon,lat)=>[(lon-origin.lon)*111320*c,(lat-origin.lat)*111320];};
-const lonLatOf=(origin,x,y)=>({lon:origin.lon+x/(111320*Math.cos(origin.lat*Math.PI/180)),lat:origin.lat+y/111320});
+export const lonLatOf=(origin,x,y)=>({lon:origin.lon+x/(111320*Math.cos(origin.lat*Math.PI/180)),lat:origin.lat+y/111320});
 const yieldToBrowser=()=>new Promise(resolve=>setTimeout(resolve,0));
 
 // The grid is rotated to the survey's main direction: u runs along it, v across. axis = [cos, sin].
@@ -79,7 +79,7 @@ function changePoint(s,skip,{first,end,dr,H,step,margin,from=0}){
   return at==null||!(whole>0)?null:{at,gain:1-best/whole};
 }
 // Ground distance from the boat of the echo at slant range r on a side's cross-section, or null.
-function groundRange(r,H,draft,side){
+export function groundRange(r,H,draft,side){
   if(r<=H)return null;
   const bed=Math.sqrt(r*r-H*H);
   if(side.open||bed<=side.toe)return side.open&&bed>side.reach?null:bed;
@@ -198,7 +198,7 @@ export function analyseSide(samples,{rangeM,H,draft,sensitivity,reference=null,s
 
 // Calls visit(i, reference) for each ping in turn, with the average of the rows (see analyseSide) of the
 // pings within halfWindow of it: the usual echo at each slant range around that ping. 0 means unknown.
-function slidingReference(rows,halfWindow,visit){
+export function slidingReference(rows,halfWindow,visit){
   const bins=Math.max(0,...rows.map(row=>row.length)),total=new Float64Array(bins),used=new Uint32Array(bins),reference=new Float32Array(bins);
   const add=(row,sign)=>{for(let b=0;b<row.length;b++)if(row[b]){total[b]+=sign*(row[b]-1);used[b]+=sign;}};
   for(let i=0;i<Math.min(halfWindow,rows.length);i++)add(rows[i],1);
@@ -215,7 +215,7 @@ function slidingReference(rows,halfWindow,visit){
 // own gain curve cancels out. The brightness ratio gives the local slope, integrated across the bed and
 // pinned to the known depths at both ends. Returns heights above the bed every RELIEF_STEP metres.
 // reference holds the average echo every REF_STEP metres of slant range.
-const RELIEF_STEP=.1,REF_STEP=.05;
+export const RELIEF_STEP=.1,REF_STEP=.05;
 export function shadingRelief(s,reference,{first,dr,H,end,skip,features}){
   const reach=Math.sqrt(Math.max(0,(end*dr)**2-H*H)),count=Math.floor(reach/RELIEF_STEP);
   if(count<20)return null;
@@ -261,7 +261,7 @@ function rollingMedian(values,halfWindow){
 }
 
 // The rotation that gives the smallest bounding box around the route.
-function bestAxis(points){
+export function bestAxis(points){
   let best=[1,0],bestArea=Infinity;
   for(let deg=0;deg<180;deg+=1){
     const a=deg*Math.PI/180,c=Math.cos(a),s=Math.sin(a);let u0=Infinity,u1=-Infinity,v0=Infinity,v1=-Infinity;
@@ -303,18 +303,18 @@ function clusterFeatures(detections,{minPings=3,minHeight=.1,minSpan=.25}={}){
   }).filter(o=>o.height>=minHeight&&o.span>=minSpan);
 }
 
-// Builds a canal (or open-water) seabed from the matched sonar and GPS, in local metres
-// (x east, y north, depth positive down and negative above the water).
-// sensitivity (0-1): how faint a shadow still counts. shading (0-1): how much bed detail from shading to add.
-// timeRange ([start, end] in recording seconds) limits the model to one stretch of the survey.
-export async function buildSeabedModel(file,frames,gps,sync,{scans=[],draftM=.2,sensitivity=.5,shading=.8,maxCells=200000,maxPings=8000,timeRange=null,progress=()=>{}}={}){
+// Reads the sonar pings of a survey (or of the stretch in timeRange, in recording seconds) with their
+// positions and headings, and analyses each side of each sidescan ping as a cross-section of the canal:
+// waterline, bank toe and shadows. Pings whose direction is unreliable are left out. Shared by the 3D
+// model and the crack screening. Each side keeps its row (see analyseSide) for slidingReference.
+export async function readSurvey(file,frames,gps,sync,{draftM=.2,sensitivity=.5,maxPings=8000,timeRange=null,progress=()=>{}}={}){
   const primary=frames.filter(f=>f.channel===0&&validPosition(f.lon,f.lat));
-  if(primary.length<20)throw new Error('Too few SL3 positions to build a seabed');
+  if(primary.length<20)throw new Error('Too few SL3 positions in this recording');
   const origin={lon:quantile(primary.map(f=>f.lon),.5),lat:quantile(primary.map(f=>f.lat),.5)},local=localMetres(origin);
   // Depth under the sonar, with spikes that disagree with their neighbours removed.
   const plausible=primary.filter(f=>f.depthM>.2&&f.depthM<200);
   const depthPrimary=plausible.filter((f,i)=>{const around=quantile(plausible.slice(Math.max(0,i-7),i+8).map(g=>g.depthM),.5);return Math.abs(f.depthM-around)<=Math.max(.5,.25*around);});
-  if(depthPrimary.length<20)throw new Error('Too few valid depth readings to build a seabed');
+  if(depthPrimary.length<20)throw new Error('Too few valid depth readings in this recording');
   const inRange=f=>!timeRange||f.timeMs/1000>=timeRange[0]&&f.timeMs/1000<=timeRange[1];
   const sidescan=frames.filter(f=>f.channel===5&&f.pingSize>=16&&f.maxRangeFt>0&&inRange(f));
   const pingFrames=sidescan.length?sidescan:depthPrimary.filter(inRange),stride=Math.max(1,Math.ceil(pingFrames.length/maxPings)),reader=new FileWindow(file);
@@ -397,6 +397,15 @@ export async function buildSeabedModel(file,frames,gps,sync,{scans=[],draftM=.2,
   }
   const baseline=rollingMedian(pings.map(p=>p.D),halfWindow);
   pings.forEach((p,i)=>{p.baseline=baseline[i];p.anomaly=p.D-baseline[i];});
+  return {origin,local,primary,depthPrimary,sidescan,swathM,pings,sonarPings,spacing,halfWindow};
+}
+
+// Builds a canal (or open-water) seabed from the matched sonar and GPS, in local metres
+// (x east, y north, depth positive down and negative above the water).
+// sensitivity (0-1): how faint a shadow still counts. shading (0-1): how much bed detail from shading to add.
+// timeRange ([start, end] in recording seconds) limits the model to one stretch of the survey.
+export async function buildSeabedModel(file,frames,gps,sync,{scans=[],draftM=.2,sensitivity=.5,shading=.8,maxCells=200000,maxPings=8000,timeRange=null,progress=()=>{}}={}){
+  const {origin,local,depthPrimary,sidescan,swathM,pings,sonarPings,spacing,halfWindow}=await readSurvey(file,frames,gps,sync,{draftM,sensitivity,maxPings,timeRange,progress});
   // 4. Bed detail from shading, against the same reference.
   for(const k of [0,1])slidingReference(sonarPings.map(p=>p.sides[k].row),halfWindow,(i,reference)=>{
     const p=sonarPings[i],side=p.sides[k];if(side.empty)return;

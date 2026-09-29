@@ -33,6 +33,7 @@
     <symbol id="i-left" viewBox="0 0 24 24"><path d="m14.5 6-6 6 6 6"/></symbol>
     <symbol id="i-right" viewBox="0 0 24 24"><path d="m9.5 6 6 6-6 6"/></symbol>
     <symbol id="i-route" viewBox="0 0 24 24"><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="6" r="2.2"/><path d="M8.2 18h7.3a3.5 3.5 0 0 0 0-7h-7a3.5 3.5 0 0 1 0-7h7.3"/></symbol>
+    <symbol id="i-crack" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="m9 4.5 2.5 4.5-3 3.5 3.5 3.5-1.5 3.5"/></symbol>
     <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V5m0 0L7.5 9.5M12 5l4.5 4.5"/><path d="M5 19.5h14"/></symbol>
   </svg>
 
@@ -182,6 +183,29 @@
         </section>
       </div>
       <p class="guide">Drag to rotate, scroll or pinch to zoom, and right-drag or use two fingers to pan. Click a numbered point or an object to show its scan and cross-section. The model covers the chosen stretch of route, centred on the selected point. Depth under the boat is measured by the primary sonar. The bed on either side, the bank slopes and the object heights are reconstructed from the sidescan: banks from where the echoes end (the waterline) and where they change character (the toe), objects from the length of their shadows, and bumps and hollows from echo brightness. Treat them as estimates. Not for navigation.</p>
+    </section>
+
+    <section class="card crack-card" aria-labelledby="crack-title">
+      <header class="card-head">
+        <div class="card-title"><h2 id="crack-title">Crack screening</h2><span id="crack-summary" class="card-hint">Possible cracks, joints and displaced panels in the lining</span></div>
+        <div class="build-controls">
+          <label class="select-field"><span>Stretch</span><select id="crack-stretch" disabled><option value="20">20 m</option><option value="40" selected>40 m</option><option value="60">60 m</option></select></label>
+          <button type="button" id="find-cracks" class="btn btn-primary" disabled><svg class="icon" aria-hidden="true"><use href="#i-crack"/></svg><span id="find-cracks-label">Find possible cracks</span></button>
+        </div>
+      </header>
+      <p id="crack-status" class="status" data-state="idle" aria-live="polite">Match the sonar and GPS files, then select a point on the route to screen the canal around it.</p>
+      <div id="crack-view" class="crack-view"><div class="crack-empty" id="crack-empty"><svg class="icon" aria-hidden="true"><use href="#i-crack"/></svg><p>Screen a stretch to see it at full detail, with possible cracks marked</p></div></div>
+      <div id="crack-legend" class="seabed-legend crack-legend" aria-label="Line key"></div>
+      <div class="seabed-tools crack-tools">
+        <label class="slider"><span>Sensitivity</span><input id="crack-sensitivity" type="range" min="0" max="1" step="0.05" value="0.5"><output id="crack-sensitivity-value" for="crack-sensitivity">50%</output></label>
+        <label class="slider"><span>Shortest line</span><input id="crack-min-length" type="range" min="0.3" max="2" step="0.1" value="0.6"><output id="crack-min-length-value" for="crack-min-length">0.6 m</output></label>
+        <label class="slider"><span>Contrast</span><input id="crack-contrast" type="range" min="0" max="100" value="50" disabled><output id="crack-contrast-value" for="crack-contrast">50</output></label>
+        <label class="check-label"><input id="crack-show-low" type="checkbox" disabled> Show faint lines</label>
+        <span class="tool-spacer"></span>
+        <button type="button" id="crack-download" class="btn btn-secondary btn-sm" disabled><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>GeoJSON</button>
+      </div>
+      <div class="table-wrap crack-table-wrap"><table id="crack-table" class="objects-table crack-table"><thead><tr><th scope="col">#</th><th scope="col">What</th><th scope="col">Runs</th><th scope="col">Length</th><th scope="col">Size</th><th scope="col">Position</th><th scope="col">Along</th><th scope="col">Confidence</th></tr></thead><tbody></tbody></table><p class="objects-empty">No likely or possible cracks in this stretch.</p></div>
+      <p class="guide">The stretch is shown as the sonar saw it: along the route from left to right, port at the top, ground distance from the boat up and down. Drag and scroll to look closer; click the image to see that scan, or a line or row to select it. Lines that stand out of the sonar's speckle are marked: dark lines (gaps and shadows) and lit edges along, across or diagonal to the canal. Evenly spaced lines across the canal are reported as joints. The strip under the boat, the bank toes, the waterline and detected objects are not screened. <strong>GeoJSON</strong> downloads the listed lines. The size of a crack or step comes from the length of its shadow and is rough. Hairline cracks, and anything under sediment, cannot be seen by this sonar. These are possible cracks to check on site, not confirmed defects.</p>
     </section>
   </main>
   <div id="drop-overlay" class="drop-overlay" hidden><div><svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg>Drop SL3 and BIN files to load them</div></div>
