@@ -1,7 +1,7 @@
 // File-backed readers keep large recordings out of browser memory.
 const CHUNK_BYTES = 8 * 1024 * 1024;
 const RADIUS = 6356752.3142;
-const FEET_TO_METRES = 0.3048;
+export const FEET_TO_METRES = 0.3048;
 const BIN_WIDTH = {b:1,B:1,h:2,H:2,i:4,I:4,q:8,Q:8,f:4,d:8,c:2,C:2,e:4,E:4,L:4,M:1,n:4,N:16,Z:64};
 export const CHANNEL_NAMES = {0:'primary',2:'downscan',5:'sidescan'};
 export const CSV_COLUMNS = [
@@ -27,8 +27,8 @@ export class FileWindow {
 
 const view = bytes => new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
 const textField = bytes => { let end=bytes.indexOf(0); if(end<0) end=bytes.length; return new TextDecoder('utf-8').decode(bytes.subarray(0,end)); };
-const validPosition = (lon,lat) => Number.isFinite(lon) && Number.isFinite(lat) && Math.abs(lon)<=180 && Math.abs(lat)<=90 && (lon!==0 || lat!==0);
-const quantile = (array,p) => {
+export const validPosition = (lon,lat) => Number.isFinite(lon) && Number.isFinite(lat) && Math.abs(lon)<=180 && Math.abs(lat)<=90 && (lon!==0 || lat!==0);
+export const quantile = (array,p) => {
   if(!array.length) return null;
   const sorted=[...array].sort((a,b)=>a-b), x=(sorted.length-1)*p, i=Math.floor(x);
   return sorted[i]+(sorted[Math.min(i+1,sorted.length-1)]-sorted[i])*(x-i);
@@ -167,13 +167,13 @@ export function findAlignment(frames,gps){
     reason:trusted?'Spatial time alignment verified against both GPS tracks':'Route match failed accuracy or coverage check'};
 }
 
-function primaryValue(primary,time,key,fallback){
+export function primaryValue(primary,time,key,fallback){
   const pair=interpolate(primary,time,item=>item.timeMs/1000);
   return pair?interpNumber(pair,key):fallback;
 }
 // Position rule shared by the CSV and the 3D model: interpolated BIN GPS where fixes bracket the ping within two
 // seconds and agree with the SL3 primary track within eight metres; otherwise the SL3 primary-channel position.
-function resolvePosition(primary,gps,sync,time,fallback){
+export function resolvePosition(primary,gps,sync,time,fallback){
   const sl3Lon=primaryValue(primary,time,'lon',fallback.lon),sl3Lat=primaryValue(primary,time,'lat',fallback.lat),sl3Valid=validPosition(sl3Lon,sl3Lat);
   const bin=sync.trusted?interpolateGps(gps,time+sync.offset_s):null;
   const difference=bin&&sl3Valid?distanceMetres(sl3Lon,sl3Lat,bin.lon,bin.lat):null,useBin=difference!=null&&difference<=8;
@@ -289,133 +289,4 @@ export function recordingSummary(frames){
     if(f.channel===0){if(f.depthM>0&&f.depthM<20)depth.push(f.depthM);if(validPosition(f.lon,f.lat))route.push([f.lon,f.lat]);}}
   const selected=route.length>180?Array.from({length:180},(_,i)=>route[Math.floor(i*(route.length-1)/179)]):route;
   return {start:first,duration:last-first,counts,medianDepth:quantile(depth,.5),route:selected,previewStart:Math.max(0,Math.min(last-first-90,(last-first)*.5-45))};
-}
-
-// ---- 3D seabed model ----
-// Local east/north metres around an origin, using the same flat-earth scale as distanceMetres.
-export const localMetres=origin=>{const c=Math.cos(origin.lat*Math.PI/180);return (lon,lat)=>[(lon-origin.lon)*111320*c,(lat-origin.lat)*111320];};
-const yieldToBrowser=()=>new Promise(resolve=>setTimeout(resolve,0));
-
-// Depth at a point of the model grid, bilinear between the surrounding cells that have data; NaN outside it.
-export function seabedDepthAt(model,x,y){
-  const fx=(x-model.minX)/model.cell,fy=(y-model.minY)/model.cell,i=Math.floor(fx),j=Math.floor(fy);
-  let sum=0,weight=0;
-  for(const [di,dj] of [[0,0],[1,0],[0,1],[1,1]]){
-    const ii=i+di,jj=j+dj;if(ii<0||jj<0||ii>=model.nx||jj>=model.ny)continue;
-    const value=model.depth[jj*model.nx+ii],w=(di?fx-i:1-(fx-i))*(dj?fy-j:1-(fy-j));
-    if(!Number.isNaN(value)&&w>0){sum+=value*w;weight+=w;}
-  }
-  return weight>0?sum/weight:NaN;
-}
-
-// Primary-channel depths at their resolved positions, dropping spikes that disagree with their neighbours.
-function soundings(primary,gps,sync,local,maxPoints){
-  const valid=primary.filter(f=>f.depthM>.2&&f.depthM<200),stride=Math.max(1,Math.ceil(valid.length/maxPoints)),points=[];
-  for(let i=0;i<valid.length;i+=stride){
-    const around=quantile(valid.slice(Math.max(0,i-7),i+8).map(f=>f.depthM),.5);
-    if(Math.abs(valid[i].depthM-around)>Math.max(.5,.25*around))continue;
-    const p=resolvePosition(primary,gps,sync,valid[i].timeMs/1000,valid[i]);
-    if(p.lon!=null){const [x,y]=local(p.lon,p.lat);points.push({x,y,depth:valid[i].depthM});}
-  }
-  return points;
-}
-
-// Inverse-distance interpolation of soundings onto the grid, out to radiusM from the nearest sounding.
-function depthGrid(points,grid,radiusM){
-  const {nx,ny,cell,minX,minY}=grid,sum=new Float64Array(nx*ny),count=new Uint32Array(nx*ny);
-  for(const p of points){const k=Math.round((p.y-minY)/cell)*nx+Math.round((p.x-minX)/cell);sum[k]+=p.depth;count[k]++;}
-  const bucket=radiusM,buckets=new Map(),key=(bx,by)=>bx*100003+by;
-  for(let k=0;k<nx*ny;k++){
-    if(!count[k])continue;
-    const x=minX+k%nx*cell,y=minY+Math.floor(k/nx)*cell,id=key(Math.floor(x/bucket),Math.floor(y/bucket));
-    if(!buckets.has(id))buckets.set(id,[]);buckets.get(id).push(x,y,sum[k]/count[k]);
-  }
-  const depth=new Float32Array(nx*ny).fill(NaN),r2=radiusM*radiusM,soft=(cell/2)**2;
-  for(let j=0;j<ny;j++)for(let i=0;i<nx;i++){
-    const x=minX+i*cell,y=minY+j*cell,bx=Math.floor(x/bucket),by=Math.floor(y/bucket);let total=0,weight=0;
-    for(let dx=-1;dx<=1;dx++)for(let dy=-1;dy<=1;dy++){
-      const list=buckets.get(key(bx+dx,by+dy));if(!list)continue;
-      for(let n=0;n<list.length;n+=3){const d2=(list[n]-x)**2+(list[n+1]-y)**2;if(d2<=r2){const w=1/(d2+soft);total+=w*list[n+2];weight+=w;}}
-    }
-    if(weight>0)depth[j*nx+i]=total/weight;
-  }
-  return depth;
-}
-
-// Sidescan mosaic: each ping's port and starboard samples are laid out across the track, assuming a flat
-// seabed at the depth under the boat (ground range = sqrt(slant² - depth²)). Port samples run from the outer
-// edge in to the boat and starboard samples from the boat out, as Lowrance stores them.
-async function sidescanMosaic(file,pings,primary,depthPrimary,gps,sync,local,grid,{maxPings,progress}){
-  const width=grid.maxX-grid.minX,height=grid.maxY-grid.minY;
-  let texel=grid.cell/2;texel=Math.max(texel,width/1023,height/1023);
-  const tw=Math.round(width/texel)+1,th=Math.round(height/texel)+1,sum=new Float32Array(tw*th),count=new Uint16Array(tw*th);
-  const reader=new FileWindow(file),stride=Math.max(1,Math.ceil(pings.length/maxPings)),at=(time,f)=>resolvePosition(primary,gps,sync,time,f);
-  let used=0;
-  for(let n=0;n<pings.length;n+=stride){
-    const f=pings[n],time=f.timeMs/1000,a=at(time-1,f),b=at(time+1,f),p=at(time,f);
-    if(n/stride%200===0){progress(n/pings.length);await yieldToBrowser();}
-    if(a.lon==null||b.lon==null||p.lon==null)continue;
-    const [ax,ay]=local(a.lon,a.lat),[bx,by]=local(b.lon,b.lat),[px,py]=local(p.lon,p.lat),length=Math.hypot(bx-ax,by-ay);
-    if(length<.3)continue;   // too slow to know which way the boat faces
-    const rx=(by-ay)/length,ry=-(bx-ax)/length,range=f.maxRangeFt*FEET_TO_METRES;
-    const depth=depthPrimary.length>=2?primaryValue(depthPrimary,time,'depthM',f.depthM):f.depthM;
-    const payload=await reader.bytes(f.pingOffset,f.pingSize),half=payload.length>>1,step=Math.max(1,Math.floor(half/384));
-    for(let j=0;j+step<=half;j+=step){
-      const slant=(j+step/2)/half*range;if(slant<=depth)continue;
-      const ground=Math.sqrt(slant*slant-depth*depth);
-      for(const side of [-1,1]){
-        let value=0;for(let q=0;q<step;q++)value+=payload[side<0?half-1-j-q:half+j+q];
-        const u=Math.round((px+side*ground*rx-grid.minX)/texel),v=Math.round((py+side*ground*ry-grid.minY)/texel);
-        if(u>=0&&v>=0&&u<tw&&v<th){sum[v*tw+u]+=value/step;count[v*tw+u]++;}
-      }
-    }
-    used++;
-  }
-  // Fill single-texel gaps between pings from their neighbours, then stretch 2-98 % to 0-255.
-  const mean=new Float32Array(tw*th).fill(NaN);
-  for(let k=0;k<tw*th;k++)if(count[k])mean[k]=sum[k]/count[k];
-  for(let pass=0;pass<2;pass++){
-    const next=mean.slice();
-    for(let v=1;v<th-1;v++)for(let u=1;u<tw-1;u++){
-      const k=v*tw+u;if(!Number.isNaN(mean[k]))continue;
-      let total=0,n=0;for(const d of [-1,1,-tw,tw,-tw-1,-tw+1,tw-1,tw+1]){const value=mean[k+d];if(!Number.isNaN(value)){total+=value;n++;}}
-      if(n>=3)next[k]=total/n;
-    }
-    mean.set(next);
-  }
-  const covered=[];for(let k=0;k<tw*th;k+=7)if(!Number.isNaN(mean[k]))covered.push(mean[k]);
-  if(!covered.length)return null;
-  const low=quantile(covered,.02),high=quantile(covered,.98),values=new Uint8Array(tw*th),mask=new Uint8Array(tw*th);
-  for(let k=0;k<tw*th;k++)if(!Number.isNaN(mean[k])){mask[k]=1;values[k]=Math.max(0,Math.min(255,Math.round((mean[k]-low)/Math.max(1e-6,high-low)*255)));}
-  return {width:tw,height:th,texel,values,mask,pings:used};
-}
-
-// Builds a gridded seabed from primary-channel depths at their GPS positions, draped with a sidescan mosaic,
-// plus the route and scan points, all in local metres (x east, y north, depth positive down).
-export async function buildSeabedModel(file,frames,gps,sync,{scans=[],maxGrid=256,maxSoundings=40000,maxPings=12000,progress=()=>{}}={}){
-  const primary=frames.filter(f=>f.channel===0&&validPosition(f.lon,f.lat));
-  if(primary.length<20)throw new Error('Too few SL3 positions to build a seabed');
-  const origin={lon:quantile(primary.map(f=>f.lon),.5),lat:quantile(primary.map(f=>f.lat),.5)},local=localMetres(origin);
-  const points=soundings(primary,gps,sync,local,maxSoundings);
-  if(points.length<20)throw new Error('Too few valid depth readings to build a seabed');
-  const pings=frames.filter(f=>f.channel===5&&f.pingSize>=8&&f.maxRangeFt>0);
-  // Sonar coverage either side of the track: the median sidescan range, or 10 m without sidescan.
-  const swathM=pings.length?Math.min(150,quantile(pings.map(f=>f.maxRangeFt*FEET_TO_METRES),.5)):10;
-  const routeStride=Math.max(1,Math.ceil(primary.length/2000)),route=[];
-  for(let i=0;i<primary.length;i+=routeStride){const p=resolvePosition(primary,gps,sync,primary[i].timeMs/1000,primary[i]);if(p.lon!=null)route.push(local(p.lon,p.lat));}
-  let minX=Infinity,maxX0=-Infinity,minY=Infinity,maxY0=-Infinity;
-  for(const [x,y] of points.map(p=>[p.x,p.y]).concat(route)){minX=Math.min(minX,x);maxX0=Math.max(maxX0,x);minY=Math.min(minY,y);maxY0=Math.max(maxY0,y);}
-  minX-=swathM;maxX0+=swathM;minY-=swathM;maxY0+=swathM;
-  const cell=Math.max(.25,Math.max(maxX0-minX,maxY0-minY)/(maxGrid-1));
-  const nx=Math.round((maxX0-minX)/cell)+1,ny=Math.round((maxY0-minY)/cell)+1;
-  const grid={nx,ny,cell,minX,minY,maxX:minX+(nx-1)*cell,maxY:minY+(ny-1)*cell};
-  progress(.02);await yieldToBrowser();
-  const depth=depthGrid(points,grid,swathM);
-  let minDepth=Infinity,maxDepth=-Infinity;for(const value of depth)if(!Number.isNaN(value)){minDepth=Math.min(minDepth,value);maxDepth=Math.max(maxDepth,value);}
-  const depthPrimary=primary.filter(f=>f.depthM>.2&&f.depthM<200);
-  const mosaic=pings.length?await sidescanMosaic(file,pings,primary,depthPrimary,gps,sync,local,grid,{maxPings,progress:fraction=>progress(.05+.93*fraction)}):null;
-  const model={origin,...grid,depth,minDepth,maxDepth,mosaic,route,swathM,soundings:points.length};
-  model.scans=scans.map((scan,i)=>{const [x,y]=local(scan.lon,scan.lat),d=seabedDepthAt(model,x,y);return {x,y,depth:Number.isNaN(d)?quantile(points.map(p=>p.depth),.5):d,number:i+1};});
-  progress(1);
-  return model;
 }

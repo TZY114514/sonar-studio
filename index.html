@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#f3f6f8" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0a121a" media="(prefers-color-scheme: dark)">
-  <meta name="description" content="Match Lowrance SL3 sonar scans to ArduPilot BIN GPS tracks, browse each scan on an interactive route and explore the seabed in 3D.">
+  <meta name="description" content="Match Lowrance SL3 sonar scans to ArduPilot BIN GPS tracks, browse each scan on an interactive route and reconstruct the canal or seabed in 3D.">
   <title>Sonar Studio Web — Explore sonar on a GPS route</title>
   <link rel="icon" type="image/svg+xml" href="./favicon.svg">
   <!-- Apply a saved theme choice before the first paint. -->
@@ -51,7 +51,7 @@
   <main class="page">
     <section class="hero">
       <h1>Explore sonar on a GPS route</h1>
-      <p>Open a Lowrance SL3 recording and its ArduPilot BIN logs. Sonar and GPS are matched automatically, so you can browse scans along the route, export aligned data and explore the seabed in 3D. Everything runs in your browser; files are never uploaded.</p>
+      <p>Open a Lowrance SL3 recording and its ArduPilot BIN logs. Sonar and GPS are matched automatically, so you can browse scans along the route, export aligned data and reconstruct the canal in 3D: bed, bank slopes, objects and their sonar shadows. Everything runs in your browser; files are never uploaded.</p>
     </section>
 
     <div class="workbench">
@@ -145,19 +145,43 @@
 
     <section class="card seabed-card" aria-labelledby="seabed-title">
       <header class="card-head">
-        <div class="card-title"><h2 id="seabed-title">3D seabed model</h2><span id="seabed-summary" class="card-hint">Sonar depth, sidescan and GPS combined</span></div>
-        <button type="button" id="build-seabed" class="btn btn-primary" disabled><svg class="icon" aria-hidden="true"><use href="#i-cube"/></svg>Build 3D model</button>
+        <div class="card-title"><h2 id="seabed-title">3D canal model</h2><span id="seabed-summary" class="card-hint">Bed, banks, objects and shadows from sonar and GPS</span></div>
+        <div class="build-controls">
+          <label class="select-field"><span>Stretch</span><select id="seabed-stretch" disabled><option value="100">100 m</option><option value="250" selected>250 m</option><option value="500">500 m</option><option value="all">Whole recording</option></select></label>
+          <button type="button" id="build-seabed" class="btn btn-primary" disabled><svg class="icon" aria-hidden="true"><use href="#i-cube"/></svg><span id="build-seabed-label">Build 3D model</span></button>
+        </div>
       </header>
+      <details class="seabed-settings" id="seabed-settings">
+        <summary>Reconstruction settings</summary>
+        <div class="settings-grid">
+          <label class="slider"><span>Transducer depth</span><input id="seabed-draft" type="range" min="0" max="1" step="0.05" value="0.2"><output id="seabed-draft-value" for="seabed-draft">0.20 m</output></label>
+          <label class="slider"><span>Shadow sensitivity</span><input id="seabed-sensitivity" type="range" min="0" max="1" step="0.05" value="0.5"><output id="seabed-sensitivity-value" for="seabed-sensitivity">50%</output></label>
+          <label class="slider"><span>Bed detail from shading</span><input id="seabed-shading" type="range" min="0" max="1" step="0.05" value="0.8"><output id="seabed-shading-value" for="seabed-shading">80%</output></label>
+        </div>
+        <p class="settings-note">Transducer depth is how far below the water surface the sonar sits. Higher shadow sensitivity finds fainter objects, and more false ones. Bed detail from shading adds bumps and hollows read from echo brightness. Changes apply when you rebuild.</p>
+      </details>
       <p id="seabed-status" class="status" data-state="idle" aria-live="polite">Match the sonar and GPS files, then build the model.</p>
-      <div id="seabed-view" class="seabed-view"><div class="seabed-empty" id="seabed-empty"><svg class="icon" aria-hidden="true"><use href="#i-cube"/></svg><p>Build the model to explore the seabed in 3D</p></div></div>
+      <div id="seabed-view" class="seabed-view"><div class="seabed-empty" id="seabed-empty"><svg class="icon" aria-hidden="true"><use href="#i-cube"/></svg><p>Build the model to explore the canal in 3D: bed, bank slopes, objects and their sonar shadows</p></div></div>
+      <div id="seabed-legend" class="seabed-legend" aria-label="Colour key"></div>
       <div class="seabed-tools">
-        <div class="segmented" role="radiogroup" aria-label="Seabed colouring"><label><input type="radio" name="seabed-texture" value="sonar" checked disabled><span>Sonar texture</span></label><label><input type="radio" name="seabed-texture" value="depth" disabled><span>Depth colours</span></label></div>
-        <label class="slider"><span>Vertical exaggeration</span><input id="seabed-exaggeration" type="range" min="1" max="20" step="0.5" value="5" disabled><output id="seabed-exaggeration-value" for="seabed-exaggeration">5×</output></label>
+        <div class="segmented" role="radiogroup" aria-label="Colour the model by"><label><input type="radio" name="seabed-colour" value="sonar" checked disabled><span>Sonar</span></label><label><input type="radio" name="seabed-colour" value="depth" disabled><span>Depth</span></label><label><input type="radio" name="seabed-colour" value="relief" disabled><span>Relief</span></label><label><input type="radio" name="seabed-colour" value="source" disabled><span>Source</span></label></div>
+        <div class="overlay-toggles" role="group" aria-label="Show on the model"><label class="check-label"><input id="seabed-contours" type="checkbox" checked disabled> Contours</label><label class="check-label"><input id="seabed-shadows" type="checkbox" disabled> Shadows</label><label class="check-label"><input id="seabed-objects" type="checkbox" checked disabled> Objects</label></div>
+        <label class="slider"><span>Vertical exaggeration</span><input id="seabed-exaggeration" type="range" min="1" max="20" step="0.5" value="3" disabled><output id="seabed-exaggeration-value" for="seabed-exaggeration">3×</output></label>
         <span class="tool-spacer"></span>
         <button type="button" id="seabed-reset" class="btn btn-secondary btn-sm" disabled><svg class="icon" aria-hidden="true"><use href="#i-reset"/></svg>Reset view</button>
         <button type="button" id="seabed-save" class="btn btn-secondary btn-sm" disabled><svg class="icon" aria-hidden="true"><use href="#i-image"/></svg>Save PNG</button>
       </div>
-      <p class="guide">Drag to rotate, scroll or pinch to zoom, and right-drag or use two fingers to pan. Click a numbered point to show its scan in the Sonar scan panel. Depth comes from the primary sonar along the route and is interpolated between survey lines. The sonar texture lays each sidescan ping across the track, assuming a flat seabed. Not for navigation.</p>
+      <div class="seabed-detail">
+        <section class="section-panel" aria-labelledby="section-title">
+          <div class="panel-head"><h3 id="section-title">Cross-section</h3><span id="section-caption" class="card-hint">At the selected point</span></div>
+          <div id="section-chart" class="section-chart"></div>
+        </section>
+        <section class="objects-panel" aria-labelledby="objects-title">
+          <div class="panel-head"><h3 id="objects-title">Detected objects</h3><span id="objects-caption" class="card-hint">From their sonar shadows</span></div>
+          <div class="table-wrap"><table id="objects-table" class="objects-table"><thead><tr><th scope="col">#</th><th scope="col">Type</th><th scope="col">Height</th><th scope="col">Size</th><th scope="col">Position</th><th scope="col">Along</th></tr></thead><tbody></tbody></table><p id="objects-empty" class="objects-empty">No objects detected in this stretch.</p></div>
+        </section>
+      </div>
+      <p class="guide">Drag to rotate, scroll or pinch to zoom, and right-drag or use two fingers to pan. Click a numbered point or an object to show its scan and cross-section. The model covers the chosen stretch of route, centred on the selected point. Depth under the boat is measured by the primary sonar. The bed on either side, the bank slopes and the object heights are reconstructed from the sidescan: banks from where the echoes end (the waterline) and where they change character (the toe), objects from the length of their shadows, and bumps and hollows from echo brightness. Treat them as estimates. Not for navigation.</p>
     </section>
   </main>
   <div id="drop-overlay" class="drop-overlay" hidden><div><svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg>Drop SL3 and BIN files to load them</div></div>

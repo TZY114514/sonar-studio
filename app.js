@@ -1,10 +1,11 @@
-import {FileWindow,scanSl3,scanBin,combineFixes,findAlignment,matchedGpsForFrame,nearestSample,exportAligned,recordingSummary,trackGeoJson,trackGpx,buildSeabedModel} from './engine.js';
+import {FileWindow,scanSl3,scanBin,combineFixes,findAlignment,matchedGpsForFrame,nearestSample,exportAligned,recordingSummary,trackGeoJson,trackGpx} from './engine.js';
+import {buildSeabedModel,seabedDepthAt,seabedBaseAt} from './reconstruct.js';
 import {createRouteMap} from './route-map.js';
 import {renderScan} from './scan-image.js';
 
 const $=id=>document.getElementById(id);
 const PREVIEW_SECONDS=30;
-const state={sonar:null,bins:[],frames:null,summary:null,gps:null,sync:null,route:[],trackFixes:[],samples:[],scanPoints:[],selection:null,previewStart:0,previewWindow:null,previewChannel:null,previewScan:null,version:0,alignmentVersion:0,previewVersion:0,aligning:false,busy:false,urls:[],seabed:{viewer:null,model:null,building:false,version:0}};
+const state={sonar:null,bins:[],frames:null,summary:null,gps:null,sync:null,route:[],trackFixes:[],samples:[],scanPoints:[],selection:null,previewStart:0,previewWindow:null,previewChannel:null,previewScan:null,version:0,alignmentVersion:0,previewVersion:0,aligning:false,busy:false,urls:[],seabed:{viewer:null,module:null,model:null,building:false,version:0,selectedObject:-1}};
 const count=value=>Number(value||0).toLocaleString('en-US');
 const durationText=seconds=>{const s=Math.max(0,Math.round(seconds));return `${Math.floor(s/3600)}h ${String(Math.floor(s%3600/60)).padStart(2,'0')}m ${String(s%60).padStart(2,'0')}s`;};
 const clockText=seconds=>{const s=Math.max(0,Math.round(seconds)),h=Math.floor(s/3600),m=Math.floor(s%3600/60),rest=String(s%60).padStart(2,'0');return h?`${h}:${String(m).padStart(2,'0')}:${rest}`:`${m}:${rest}`;};
@@ -14,6 +15,7 @@ const CHANNEL_GUIDES={5:'Bright bands show stronger echoes. The dark center band
 // Preview sidescan when the recording has it, otherwise downscan.
 const previewChannel=summary=>summary?.counts.sidescan?5:summary?.counts.downscan?2:null;
 const sizeText=bytes=>bytes>=1e9?`${(bytes/1e9).toFixed(2)} GB`:`${(bytes/1e6).toFixed(1)} MB`;
+const metresBetween=(a,b)=>Math.hypot((a.lon-b.lon)*111320*Math.cos(a.lat*Math.PI/180),(a.lat-b.lat)*111320);
 
 // Status lines carry a state (idle, working, ok, warn or error) that the stylesheet shows as an icon.
 function setStatus(id,text,state='idle'){const line=$(id);line.textContent=text;line.dataset.state=state;}
@@ -39,7 +41,7 @@ function ready(){
   $('sonar-name').closest('.file-picker').toggleAttribute('data-loaded',Boolean(state.sonar));
   $('gps-name').closest('.file-picker').toggleAttribute('data-loaded',state.bins.length>0);
   $('download-gpx').disabled=$('download-geojson').disabled=!(state.trackFixes.length>=2&&!state.aligning);
-  $('build-seabed').disabled=!(state.sync?.trusted&&state.trackFixes.length>=2&&!state.aligning&&!state.busy&&!state.seabed.building);
+  $('build-seabed').disabled=$('seabed-stretch').disabled=!(state.sync?.trusted&&state.trackFixes.length>=2&&!state.aligning&&!state.busy&&!state.seabed.building);
   $('sonar-input').disabled=state.busy||state.aligning;$('gps-input').disabled=state.busy||state.aligning;
   $('entire-file').disabled=state.busy;
   $('use-preview-window').disabled=state.busy||!state.selection;
@@ -126,13 +128,16 @@ function resetAlignment(){
   drawRoute();
 }
 
-// selection: {kind:'scan',index,time,lat,lon} for a numbered point, or {kind:'point',time,lat,lon} for a route click.
+// selection: {kind:'scan',index,time,lat,lon} for a numbered point, or {kind:'point',time,lat,lon} for a route
+// click; a point may also carry object, the index of a detected object in the 3D model.
 function select(selection){
   state.selection=selection;
   state.previewStart=Math.max(0,Math.min(Math.max(0,state.summary.duration-PREVIEW_SECONDS),selection.time-PREVIEW_SECONDS/2));
-  const label=selection.kind==='scan'?`Scan ${selection.index+1}`:'Route point';
+  const object=selection.object!=null?state.seabed.model?.objects[selection.object]:null;
+  const label=selection.kind==='scan'?`Scan ${selection.index+1}`:object?`Object ${object.id}`:'Route point';
   $('scan-details').textContent=`${label} · Recording time ${durationText(selection.time)} · GPS ${Math.abs(selection.lat).toFixed(6)}° ${selection.lat<0?'S':'N'}, ${Math.abs(selection.lon).toFixed(6)}° ${selection.lon<0?'W':'E'}`;
-  routeMap.select(selection);state.seabed.viewer?.select(selection.kind==='scan'?selection.index:-1);preview();ready();
+  if(!object)markObject(-1);
+  routeMap.select(selection);state.seabed.viewer?.select(selection.kind==='scan'?selection.index:-1);updateSection();preview();ready();
 }
 function selectScan(index){const scan=state.scanPoints[index];if(scan)select({kind:'scan',index,time:scan.time,lat:scan.lat,lon:scan.lon});}
 function pickRoutePoint(lat,lon,slackM){
@@ -170,7 +175,6 @@ async function alignSelection(){
     for(let i=0;i<pings.length;i+=stride){const frame=pings[i],match=matchedGpsForFrame(frame,primary,gps,sync);if(match)candidates.push({frame,...match,time:match.time-summary.start});}
     state.samples=candidates.map(({time,lat,lon})=>({time,lat,lon}));
     const points=candidates.length?[candidates[0]]:[];
-    const metresBetween=(a,b)=>Math.hypot((a.lon-b.lon)*111320*Math.cos(a.lat*Math.PI/180),(a.lat-b.lat)*111320);
     while(points.length<Math.min(8,candidates.length)){
       let best=null,bestDistance=-1;
       for(const candidate of candidates){
@@ -236,41 +240,213 @@ function saveRoute(format){
   else saveBlob(new Blob([JSON.stringify(trackGeoJson(input),null,1)],{type:'application/geo+json'}),`${fileStem()}_route.geojson`);
 }
 
-// ---- 3D seabed model ----
+// ---- 3D canal model ----
+const seabedColour=()=>document.querySelector('input[name="seabed-colour"]:checked')?.value??'sonar';
 function seabedTools(enabled){
-  for(const id of ['seabed-exaggeration','seabed-reset','seabed-save'])$(id).disabled=!enabled;
-  document.querySelectorAll('input[name="seabed-texture"]').forEach(input=>{input.disabled=!enabled||input.value==='sonar'&&!state.seabed.model?.mosaic;});
+  const model=state.seabed.model;
+  for(const id of ['seabed-exaggeration','seabed-reset','seabed-save','seabed-contours','seabed-objects'])$(id).disabled=!enabled;
+  $('seabed-shadows').disabled=!enabled||!model?.mosaic;
+  document.querySelectorAll('input[name="seabed-colour"]').forEach(input=>{input.disabled=!enabled||input.value==='sonar'&&!model?.mosaic;});
 }
 function resetSeabed(message){
-  const seabed=state.seabed;seabed.version++;seabed.building=false;seabed.model=null;
+  const seabed=state.seabed;seabed.version++;seabed.building=false;seabed.model=null;seabed.selectedObject=-1;
   seabed.viewer?.clear();$('seabed-empty').hidden=false;seabedStatus(message);
-  $('seabed-summary').textContent='Sonar depth, sidescan and GPS combined';seabedTools(false);
+  $('seabed-summary').textContent='Bed, banks, objects and shadows from sonar and GPS';$('build-seabed-label').textContent='Build 3D model';
+  $('seabed-legend').replaceChildren();$('objects-table').tBodies[0].replaceChildren();$('section-chart').replaceChildren();
+  seabedTools(false);
 }
+
+// The stretch to model: the chosen length of route centred on the selected point (or the preview
+// window), as recording times from the first ping. null means the whole recording.
+function stretchRange(){
+  const choice=$('seabed-stretch').value,samples=state.samples;
+  if(choice==='all'||samples.length<2)return null;
+  // Distance along the route, stepping at least 3 m at a time so GPS jitter does not add up.
+  const along=[0];let last=samples[0],base=0;
+  for(let i=1;i<samples.length;i++){const d=metresBetween(last,samples[i]);if(d>=3){base+=d;last=samples[i];along.push(base);}else along.push(base+d);}
+  for(let i=1;i<along.length;i++)along[i]=Math.max(along[i],along[i-1]);
+  const centre=state.selection?.time??state.previewStart+PREVIEW_SECONDS/2,total=along.at(-1);
+  let k=0;for(let i=1;i<samples.length;i++)if(Math.abs(samples[i].time-centre)<Math.abs(samples[k].time-centre))k=i;
+  let low=along[k]-Number(choice)/2,high=along[k]+Number(choice)/2;
+  if(low<0){high=Math.min(total,high-low);low=0;}
+  if(high>total){low=Math.max(0,low-(high-total));high=total;}
+  const timeAt=d=>{let i=1;while(i<along.length-1&&along[i]<d)i++;const f=(d-along[i-1])/Math.max(1e-9,along[i]-along[i-1]);return samples[i-1].time+(samples[i].time-samples[i-1].time)*Math.max(0,Math.min(1,f));};
+  return {start:timeAt(low),end:timeAt(high),length:high-low};
+}
+// Enough vertical exaggeration for the relief to show: the depth range drawn at about 30 % of the canal's width.
+function defaultExaggeration(model){
+  const [port,starboard]=model.banks,width=port&&starboard?port.waterline+starboard.waterline:Math.min(model.maxU-model.minU,model.maxV-model.minV);
+  return Math.min(20,Math.max(1,Math.round(width*.3/Math.max(.3,model.maxDepth-model.minDepth)*2)/2));
+}
+
 async function buildSeabed(){
-  const seabed=state.seabed,version=++seabed.version,{sonar,frames,gps,sync,scanPoints}=state;
+  const seabed=state.seabed,version=++seabed.version,{sonar,frames,gps,sync,scanPoints,summary}=state;
+  const stretch=stretchRange(),settings={draftM:Number($('seabed-draft').value),sensitivity:Number($('seabed-sensitivity').value),shading:Number($('seabed-shading').value)};
   seabed.building=true;ready();seabedTools(false);
   try{
     seabedStatus('Loading the 3D viewer…','working');
-    const {createSeabedViewer}=await import('./seabed-3d.js');
-    const model=await buildSeabedModel(sonar,frames,gps,sync,{scans:scanPoints,progress:fraction=>{if(version===seabed.version)seabedStatus(`Building the seabed from sonar and GPS · ${Math.round(fraction*100)}%`,'working');}});
+    const module=await import('./seabed-3d.js');
+    const timeRange=stretch&&[stretch.start+summary.start,stretch.end+summary.start];
+    const model=await buildSeabedModel(sonar,frames,gps,sync,{scans:scanPoints,timeRange,...settings,progress:fraction=>{if(version===seabed.version)seabedStatus(`Reconstructing the canal from sonar and GPS · ${Math.round(fraction*100)}%`,'working');}});
     if(version!==seabed.version)return;
-    try{seabed.viewer??=createSeabedViewer($('seabed-view'),{onSelectScan:index=>{selectScan(index);seabedStatus(`Scan ${index+1} is shown in the Sonar scan panel.`,'ok');}});}
+    try{seabed.viewer??=module.createSeabedViewer($('seabed-view'),{onSelectScan:index=>{selectScan(index);seabedStatus(`Scan ${index+1} is shown in the Sonar scan panel and the cross-section.`,'ok');},onSelectObject:selectObject});}
     catch(error){throw /webgl/i.test(error.message)?new Error('this browser has WebGL turned off'):error;}
-    seabed.model=model;
-    // Start with enough vertical exaggeration for the relief to show: about a tenth of the survey's width.
-    const width=model.maxX-model.minX,height=model.maxY-model.minY,relief=Math.max(.5,model.maxDepth-model.minDepth);
-    const exaggeration=Math.min(20,Math.max(1,Math.round(Math.max(width,height)*.1/relief*2)/2));
+    seabed.module=module;seabed.model=model;seabed.selectedObject=-1;
+    const exaggeration=defaultExaggeration(model);
     $('seabed-exaggeration').value=String(exaggeration);$('seabed-exaggeration-value').textContent=`${exaggeration}×`;
-    const texture=model.mosaic?'sonar':'depth';
-    document.querySelectorAll('input[name="seabed-texture"]').forEach(input=>{input.checked=input.value===texture;});
+    if(seabedColour()==='sonar'&&!model.mosaic)document.querySelector('input[name="seabed-colour"][value="depth"]').checked=true;
     $('seabed-empty').hidden=true;
-    seabed.viewer.show(model,{exaggeration,texture});
+    seabed.viewer.show(model,{exaggeration,colour:seabedColour(),overlays:{contours:$('seabed-contours').checked,shadows:$('seabed-shadows').checked&&Boolean(model.mosaic),objects:$('seabed-objects').checked}});
     seabed.viewer.select(state.selection?.kind==='scan'?state.selection.index:-1);
-    $('seabed-summary').textContent=`${Math.round(width)} × ${Math.round(height)} m · depth ${model.minDepth.toFixed(1)}–${model.maxDepth.toFixed(1)} m${model.mosaic?' · sidescan mosaic':' · no sidescan'}`;
-    seabedStatus(`Built from ${count(model.soundings)} depth readings${model.mosaic?` and ${count(model.mosaic.pings)} sidescan pings`:''}. Drag to rotate; click a numbered point to preview its scan.`,'ok');
-    seabedTools(true);
+    const length=model.sections.at(-1).along-model.sections[0].along,[port,starboard]=model.banks;
+    $('seabed-summary').textContent=`${Math.round(length)} m of ${port||starboard?'canal':'survey'} · water up to ${model.maxDepth.toFixed(1)} m deep · ${model.objects.length} object${model.objects.length===1?'':'s'}`;
+    const banks=port&&starboard?`banks found on both sides, waterline ${port.waterline.toFixed(1)} m to port and ${starboard.waterline.toFixed(1)} m to starboard`:port||starboard?`bank found to ${port?'port':'starboard'} only`:'no banks within sonar range';
+    seabedStatus(`Built from ${count(model.pingsUsed)} ${model.mosaic?'sidescan pings':'soundings'} · ${banks}. Drag to rotate; click an object or a numbered point.`,'ok');
+    $('build-seabed-label').textContent='Rebuild 3D model';
+    drawLegend();drawObjects();updateSection();seabedTools(true);
   }catch(error){if(version===seabed.version){seabedStatus(`Could not build the 3D model: ${error.message}`,'error');$('seabed-empty').hidden=false;}}
   finally{if(version===seabed.version){seabed.building=false;ready();}}
+}
+
+// Colour key for the current colouring, plus the overlays that are switched on.
+function drawLegend(){
+  const box=$('seabed-legend'),{model,module}=state.seabed;box.replaceChildren();if(!model||!module)return;
+  const colour=seabedColour()==='sonar'&&!model.mosaic?'depth':seabedColour(),legend=module.legendFor(colour,model);
+  const key=(mark,text,extra)=>{const span=document.createElement('span');span.className=`key${extra?` ${extra}`:''}`;span.append(mark,document.createTextNode(text));box.append(span);};
+  const swatch=(css,className='swatch')=>{const i=document.createElement('i');i.className=className;i.style.background=css;return i;};
+  const chip=(css,kind)=>{const i=document.createElement('i');i.className=`chip chip-${kind}`;i.style.setProperty('--mark',css);return i;};
+  if(legend.gradient){
+    const span=document.createElement('span');span.className='key';
+    span.append(document.createTextNode(legend.from),swatch(`linear-gradient(90deg,${legend.gradient.join(',')})`,'ramp'),document.createTextNode(legend.to));box.append(span);
+    if(legend.note){const note=document.createElement('span');note.className='note';note.textContent=legend.note;box.append(note);}
+  }
+  for(const item of legend.items)key(swatch(item.color),item.label);
+  const {OVERLAY_COLOURS:colours}=module;
+  if($('seabed-contours').checked){key(chip('#ffffff','line'),`Contour every ${module.contourInterval(model)} m`);key(chip(colours.waterline,'line'),'Waterline');}
+  if($('seabed-shadows').checked&&model.mosaic)key(chip(colours.shadow,'fill'),'Acoustic shadow');
+  if($('seabed-objects').checked&&model.objects.length)key(chip(colours.marker,'label'),'Object, with height');
+}
+
+// Detected objects, one row each; a row selects the object in 3D, the scan preview and the cross-section.
+function drawObjects(){
+  const body=$('objects-table').tBodies[0],objects=state.seabed.model?.objects??[];body.replaceChildren();
+  for(const [index,object] of objects.entries()){
+    const row=body.insertRow();row.tabIndex=0;row.dataset.index=String(index);row.setAttribute('aria-selected',String(index===state.seabed.selectedObject));
+    const size=`${object.length.toFixed(1)} × ${object.width.toFixed(1)} m`;
+    for(const text of [String(object.id),object.kind==='object'?'Raised':'Hollow',`${Math.round(object.height*100)} cm`,size,`${object.offsetM.toFixed(1)} m ${object.side}`,`${Math.round(object.alongM)} m`])row.insertCell().textContent=text;
+    row.title=`Object ${object.id}: ${object.kind==='object'?'stands':'dips'} about ${Math.round(object.height*100)} cm ${object.kind==='object'?'above':'below'} the bed, seen in ${object.pings} pings`;
+  }
+  $('objects-caption').textContent=objects.length?`${objects.length} found · heights from shadow length`:'From their sonar shadows';
+}
+function markObject(index){
+  state.seabed.selectedObject=index;
+  for(const row of $('objects-table').tBodies[0].rows)row.setAttribute('aria-selected',String(Number(row.dataset.index)===index));
+  state.seabed.viewer?.selectObject(index);
+}
+function selectObject(index){
+  const object=state.seabed.model?.objects[index];if(!object)return;
+  markObject(index);
+  select({kind:'point',time:object.time-state.summary.start,lat:object.lat,lon:object.lon,object:index});
+  state.seabed.viewer?.focusObject(index);
+  seabedStatus(`Object ${object.id}: ${object.kind==='object'?'raised':'hollow'}, about ${Math.round(object.height*100)} cm. Its scan is in the Sonar scan panel.`,'ok');
+}
+
+// ---- Cross-section at the selected point ----
+const SVG='http://www.w3.org/2000/svg';
+function svg(name,attributes={},parent){const element=document.createElementNS(SVG,name);for(const [key,value] of Object.entries(attributes))element.setAttribute(key,String(value));parent?.append(element);return element;}
+function niceStep(range,target){const raw=range/target,power=10**Math.floor(Math.log10(raw));return [1,2,2.5,5,10].map(m=>m*power).find(step=>step>=raw)??10*power;}
+
+function updateSection(){
+  const chart=$('section-chart'),{model,viewer}=state.seabed;chart.replaceChildren();
+  if(!model)return;
+  const time=state.selection?state.selection.time+state.summary.start:null,sections=model.sections;
+  const inside=time!=null&&time>=sections[0].time-5&&time<=sections.at(-1).time+5;
+  if(!inside){
+    viewer?.setSection(null);$('section-caption').textContent='Select a point in this stretch';
+    const note=document.createElement('p');note.className='empty';note.textContent=time==null?'Select a scan point, an object or a place on the route to see the canal’s cross-section there.':'The selected point is outside this model’s stretch. Rebuild the model around it, or pick a point inside.';chart.append(note);return;
+  }
+  const section=sections.reduce((best,s)=>Math.abs(s.time-time)<Math.abs(best.time-time)?s:best);
+  const reach=side=>Math.min(20,side.open?side.reach:side.waterline+1.5),port=reach(section.sides[0]),starboard=reach(section.sides[1]);
+  const at=o=>[section.x+o*section.lx,section.y+o*section.ly],points=[];
+  for(let o=port;o>=-starboard-1e-9;o-=.1){const [x,y]=at(o),depth=seabedDepthAt(model,x,y);if(!Number.isNaN(depth))points.push({o,depth,base:seabedBaseAt(model,x,y)});}
+  viewer?.setSection({x:section.x,y:section.y,lx:section.lx,ly:section.ly,port,starboard});
+  if(points.length<3){const note=document.createElement('p');note.className='empty';note.textContent='No reconstructed canal at this point.';chart.append(note);return;}
+  // Objects whose extent along the track crosses this section.
+  const objects=model.objects.filter(o=>Math.abs(o.alongM-section.along)<=o.length/2+.4).map(o=>({...o,o:o.side==='port'?o.offsetM:-o.offsetM}));
+  const [portBank,starboardBank]=section.sides,width=(portBank.open?null:portBank.waterline)!=null&&!starboardBank.open?portBank.waterline+starboardBank.waterline:null;
+  drawSectionChart(chart,{points,section,objects,port,starboard,width});
+}
+
+function drawSectionChart(chart,{points,section,objects,port,starboard,width}){
+  // Drawn at the width it is shown, so its text stays the same size on a phone.
+  const W=Math.round(Math.max(300,Math.min(720,chart.clientWidth||560))),H=W<460?210:230,m={l:44,r:14,t:26,b:30},iw=W-m.l-m.r,ih=H-m.t-m.b;
+  const top=Math.min(-.3,...points.map(p=>p.depth)),bottom=Math.max(...points.map(p=>p.depth),...points.map(p=>p.base).filter(Number.isFinite),section.D)*1.1+.05;
+  const X=o=>m.l+(port-o)/(port+starboard)*iw,Y=d=>m.t+(d-top)/(bottom-top)*ih;
+  const verticalScale=(ih/(bottom-top))/(iw/(port+starboard));
+  const root=svg('svg',{viewBox:`0 0 ${W} ${H}`,role:'img',tabindex:0,'aria-label':`Cross-section of the canal at the selected point. Use the left and right arrow keys to read depths across it.`});
+  // Depth grid and axis.
+  const grid=svg('g',{class:'grid'},root),axis=svg('g',{class:'axis'},root),step=niceStep(bottom-Math.max(0,top),4);
+  for(let d=0;d<=bottom;d+=step){svg('line',{x1:m.l,x2:W-m.r,y1:Y(d),y2:Y(d)},grid);svg('text',{x:m.l-6,y:Y(d)+3.5,'text-anchor':'end'},axis).textContent=`${+d.toFixed(2)} m`;}
+  const across=niceStep(port+starboard,6);
+  for(let o=-Math.floor(starboard/across)*across;o<=port+1e-9;o+=across){svg('line',{x1:X(o),x2:X(o),y1:H-m.b,y2:H-m.b+4},axis);svg('text',{x:X(o),y:H-m.b+15,'text-anchor':'middle'},axis).textContent=`${Math.abs(+o.toFixed(1))}`;}
+  svg('text',{x:m.l,y:H-3,'text-anchor':'start'},axis).textContent='← Port (m from boat)';
+  svg('text',{x:W-m.r,y:H-3,'text-anchor':'end'},axis).textContent='Starboard →';
+  // Water above the bed, ground below it.
+  const bedPath=points.map((p,i)=>`${i?'L':'M'}${X(p.o).toFixed(1)},${Y(p.depth).toFixed(1)}`).join('');
+  svg('path',{d:`${bedPath}L${X(points.at(-1).o)},${Y(bottom)}L${X(points[0].o)},${Y(bottom)}Z`,fill:'var(--chart-ground)'},root);
+  const wet=points.map(p=>({o:p.o,d:Math.max(0,p.depth)}));
+  svg('path',{d:`${wet.map((p,i)=>`${i?'L':'M'}${X(p.o).toFixed(1)},${Y(p.d).toFixed(1)}`).join('')}L${X(wet.at(-1).o)},${Y(0)}L${X(wet[0].o)},${Y(0)}Z`,fill:'var(--chart-water)'},root);
+  svg('line',{class:'surface-line',x1:m.l,x2:W-m.r,y1:Y(0),y2:Y(0)},root);
+  // Waterline and toe marks.
+  section.sides.forEach((side,k)=>{
+    if(side.open)return;const sign=k===0?1:-1;
+    for(const [distance,text] of [[side.waterline,'waterline'],[side.toe,'toe']]){
+      if(distance==null||distance>(k===0?port:starboard))continue;
+      const x=X(sign*distance),y=text==='waterline'?Y(0):Y(points.reduce((b,p)=>Math.abs(p.o-sign*distance)<Math.abs(b.o-sign*distance)?p:b).depth);
+      svg('line',{x1:x,x2:x,y1:y-5,y2:y+5,stroke:'var(--muted)','stroke-width':1},root);
+      svg('text',{class:'annotation',x:Math.max(m.l+26,Math.min(W-m.r-26,x)),y:text==='waterline'?y-8:y+15,'text-anchor':'middle'},root).textContent=text;
+    }
+  });
+  // The smooth canal shape, then the reconstructed bed on top.
+  const basePoints=points.filter(p=>Number.isFinite(p.base));
+  if(basePoints.length>2)svg('path',{d:basePoints.map((p,i)=>`${i?'L':'M'}${X(p.o).toFixed(1)},${Y(p.base).toFixed(1)}`).join(''),fill:'none',stroke:'var(--chart-shape)','stroke-width':2,'stroke-linejoin':'round','stroke-linecap':'round'},root);
+  svg('path',{d:bedPath,fill:'none',stroke:'var(--chart-bed)','stroke-width':2,'stroke-linejoin':'round','stroke-linecap':'round'},root);
+  // Depth measured under the boat, labelled directly.
+  svg('circle',{cx:X(0),cy:Y(section.D),r:4.5,fill:'var(--chart-measured)',stroke:'var(--surface-2)','stroke-width':2},root);
+  svg('text',{class:'label',x:X(0)+8,y:Y(section.D)-8},root).textContent=`${section.D.toFixed(2)} m measured`;
+  // Objects crossing this section, labelled with number and height.
+  for(const o of objects){
+    if(o.o>port||o.o<-starboard)continue;
+    const x=X(o.o),y=Y(o.topDepth);
+    svg('path',{d:`M${x},${y-2}l-5,-9h10z`,fill:'var(--ink)'},root);
+    svg('text',{class:'label',x,y:y-15,'text-anchor':'middle'},root).textContent=`#${o.id} ${Math.round(o.height*100)} cm`;
+  }
+  // Hover and keyboard readout: a crosshair snapped to the nearest sample.
+  const cross=svg('line',{y1:m.t,y2:H-m.b,stroke:'var(--muted)','stroke-width':1,visibility:'hidden'},root);
+  const tip=document.createElement('div');tip.className='chart-tooltip';tip.hidden=true;
+  let current=points.findIndex(p=>Math.abs(p.o)<.06);if(current<0)current=Math.floor(points.length/2);
+  const show=index=>{
+    current=Math.max(0,Math.min(points.length-1,index));const p=points[current],x=X(p.o);
+    cross.setAttribute('x1',x);cross.setAttribute('x2',x);cross.setAttribute('visibility','visible');
+    tip.replaceChildren();
+    const where=document.createElement('div');where.textContent=Math.abs(p.o)<.05?'Under the boat':`${Math.abs(p.o).toFixed(1)} m to ${p.o>0?'port':'starboard'}`;tip.append(where);
+    const row=(value,text,css)=>{const div=document.createElement('div');div.className='row';const key=document.createElement('i');key.style.borderColor=css;const strong=document.createElement('strong');strong.textContent=value;div.append(key,strong,document.createTextNode(` ${text}`));tip.append(div);};
+    row(p.depth<0?`${(-p.depth).toFixed(2)} m`:`${p.depth.toFixed(2)} m`,p.depth<0?'above water (bank)':'deep, reconstructed','var(--chart-bed)');
+    if(Number.isFinite(p.base)&&p.depth>=0)row(`${(p.base-p.depth>=0?'+':'−')}${Math.abs((p.base-p.depth)*100).toFixed(0)} cm`,'vs smooth shape','var(--chart-shape)');
+    const box=chart.getBoundingClientRect(),scale=box.width/W;tip.hidden=false;
+    tip.style.left=`${Math.min(box.width-tip.offsetWidth-4,Math.max(0,x*scale+10))}px`;tip.style.top=`${m.t*scale}px`;
+  };
+  const hide=()=>{cross.setAttribute('visibility','hidden');tip.hidden=true;};
+  root.addEventListener('pointermove',event=>{const box=root.getBoundingClientRect(),x=(event.clientX-box.left)*W/box.width,o=port-(x-m.l)/iw*(port+starboard);let best=0;points.forEach((p,i)=>{if(Math.abs(p.o-o)<Math.abs(points[best].o-o))best=i;});show(best);});
+  root.addEventListener('pointerleave',hide);root.addEventListener('focus',()=>show(current));root.addEventListener('blur',hide);
+  root.addEventListener('keydown',event=>{const stepBy={ArrowLeft:-5,ArrowRight:5,Home:-points.length,End:points.length}[event.key];if(stepBy==null)return;event.preventDefault();show(current+stepBy);});
+  const legend=document.createElement('div');legend.className='chart-legend';
+  for(const [css,text,dot] of [['var(--chart-bed)','Reconstructed bed'],['var(--chart-shape)','Smooth canal shape'],['var(--chart-measured)','Measured under the boat',true]]){
+    const span=document.createElement('span'),i=document.createElement('i');if(dot){i.className='dot';i.style.background=css;}else i.style.borderColor=css;span.append(i,document.createTextNode(text));legend.append(span);
+  }
+  chart.append(root,tip,legend);
+  const label=state.selection?.kind==='scan'?`Scan ${state.selection.index+1}`:state.selection?.object!=null?`Object ${state.seabed.model.objects[state.selection.object].id}`:'Route point';
+  $('section-caption').textContent=`${label}${width?` · ${width.toFixed(1)} m wide at the waterline`:''} · depth drawn ${verticalScale>=1.5?`${verticalScale.toFixed(0)}× exaggerated`:'to scale'}`;
 }
 
 function downloadBlob(blob,name,label){const url=URL.createObjectURL(blob);state.urls.push(url);const link=document.createElement('a');link.href=url;link.download=name;link.textContent=label;return link;}
@@ -342,7 +518,17 @@ $('save-image').addEventListener('click',saveImage);
 $('download-gpx').addEventListener('click',()=>saveRoute('gpx'));
 $('build-seabed').addEventListener('click',buildSeabed);
 $('seabed-exaggeration').addEventListener('input',event=>{const value=Number(event.target.value);$('seabed-exaggeration-value').textContent=`${value}×`;state.seabed.viewer?.setExaggeration(value);});
-document.querySelectorAll('input[name="seabed-texture"]').forEach(input=>input.addEventListener('change',()=>state.seabed.viewer?.setTexture(input.value)));
+document.querySelectorAll('input[name="seabed-colour"]').forEach(input=>input.addEventListener('change',()=>{state.seabed.viewer?.setColour(input.value);drawLegend();}));
+for(const [id,name] of [['seabed-contours','contours'],['seabed-shadows','shadows'],['seabed-objects','objects']])$(id).addEventListener('change',event=>{state.seabed.viewer?.setOverlay(name,event.target.checked);drawLegend();});
+for(const [id,format] of [['seabed-draft',v=>`${v.toFixed(2)} m`],['seabed-sensitivity',v=>`${Math.round(v*100)}%`],['seabed-shading',v=>`${Math.round(v*100)}%`]]){
+  $(id).addEventListener('input',event=>{$(`${id}-value`).textContent=format(Number(event.target.value));if(state.seabed.model)seabedStatus('Settings changed · rebuild the model to apply them.','warn');});
+}
+// Redraw the cross-section when its panel changes width.
+{let width=0;new ResizeObserver(([entry])=>{const next=Math.round(entry.contentRect.width);if(Math.abs(next-width)>16&&state.seabed.model){width=next;updateSection();}else width=next;}).observe($('section-chart'));}
+$('objects-table').addEventListener('click',event=>{const row=event.target.closest('tr[data-index]');if(row)selectObject(Number(row.dataset.index));});
+$('objects-table').addEventListener('keydown',event=>{const row=event.target.closest('tr[data-index]');if(!row)return;
+  if(event.key==='Enter'||event.key===' '){event.preventDefault();selectObject(Number(row.dataset.index));}
+  else if(event.key==='ArrowDown'||event.key==='ArrowUp'){event.preventDefault();(event.key==='ArrowDown'?row.nextElementSibling:row.previousElementSibling)?.focus();}});
 $('seabed-reset').addEventListener('click',()=>state.seabed.viewer?.resetView());
 $('seabed-save').addEventListener('click',async()=>{const blob=await state.seabed.viewer?.toBlob();if(blob)saveBlob(blob,`${fileStem()}_seabed_3d.png`);});
 $('download-geojson').addEventListener('click',()=>saveRoute('geojson'));
