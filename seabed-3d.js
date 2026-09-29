@@ -2,8 +2,8 @@
 // Axes: three.js x = east, y = up (depth is negative), z = south.
 import * as THREE from 'three';
 import {OrbitControls} from './vendor/three/OrbitControls.js';
-import {color} from './scan-image.js';
-import {seabedDepthAt,gridToLocal,SOURCE} from './reconstruct.js';
+import {color} from './scan-image.js?v=e671d690ea';
+import {seabedDepthAt,gridToLocal,SOURCE} from './reconstruct.js?v=e671d690ea';
 
 // Colours. Depth is one blue ramp (shallow light, deep dark); relief diverges from a neutral grey,
 // warm for raised and cool for lower than the canal's smooth shape; sources are three categories,
@@ -48,11 +48,11 @@ export function legendFor(mode,model){
 }
 export const OVERLAY_COLOURS={shadow:cssOf(SHADOW),waterline:WATERLINE,marker:MARKER};
 
-function textSprite(lines,{selected=false}){
+function textSprite(lines,{selected=false,accent=MARKER}){
   const canvas=document.createElement('canvas'),g=canvas.getContext('2d'),scale=2,font=`600 ${13*scale}px system-ui,"Segoe UI",sans-serif`;
   g.font=font;const width=Math.ceil(Math.max(...lines.map(line=>g.measureText(line).width)))+22*scale,height=(lines.length*17+10)*scale;
   canvas.width=width;canvas.height=height;
-  g.fillStyle=selected?'#ffffff':'rgba(9,20,32,.88)';g.strokeStyle=selected?SELECTED:MARKER;g.lineWidth=(selected?3:2)*scale;
+  g.fillStyle=selected?'#ffffff':'rgba(9,20,32,.88)';g.strokeStyle=selected?SELECTED:accent;g.lineWidth=(selected?3:2)*scale;
   g.beginPath();g.roundRect(1.5*scale,1.5*scale,width-3*scale,height-3*scale,7*scale);g.fill();g.stroke();
   g.fillStyle=selected?'#0b1826':'#ffffff';g.font=font;g.textBaseline='top';
   lines.forEach((line,i)=>g.fillText(line,11*scale,(6+i*17)*scale));
@@ -151,7 +151,7 @@ function contourLines(model,interval){
 
 function line(points,material){return new THREE.Line(new THREE.BufferGeometry().setFromPoints(points),material);}
 
-export function createSeabedViewer(container,{onSelectScan,onSelectObject=()=>{}}){
+export function createSeabedViewer(container,{onSelectScan,onSelectObject=()=>{},onSelectCrack=()=>{}}){
   // preserveDrawingBuffer lets "Save PNG" read the rendered view.
   const renderer=new THREE.WebGLRenderer({antialias:true,preserveDrawingBuffer:true});
   renderer.setPixelRatio(Math.min(2,window.devicePixelRatio||1));
@@ -169,16 +169,18 @@ export function createSeabedViewer(container,{onSelectScan,onSelectObject=()=>{}
   const render=()=>renderer.render(scene,camera);
   controls.addEventListener('change',render);
 
-  let content=null,vertical=null,seabed=null,overlay=null,contours=null,section=null,crackLines=null,materials=null,colours=null,markers=[],objectMarkers=[],model=null;
+  let content=null,vertical=null,seabed=null,overlay=null,contours=null,section=null,materials=null,colours=null,markers=[],objectMarkers=[],model=null;
+  // Crack screening (inspect.js): the screened stretch and the lines found in it, kept across rebuilds.
+  let cracks={result:null,lines:[]},crackArea=null,crackPatch=null,crackLines=null,crackLabels=null,crackMarkers=[];
   let exaggeration=1,home=null,moved=false,mode='sonar',flight=0;
-  const shown={contours:true,shadows:false,objects:true};
+  const shown={contours:true,shadows:false,objects:true,cracks:true};
   controls.addEventListener('start',()=>{moved=true;cancelAnimationFrame(flight);});
 
   // Labels keep their size in pixels: without size attenuation, a sprite's scale is measured at one unit
   // from the camera, so a pixel is 2·tan(fov/2)/height of it.
   function sizeLabels(){
     const perPixel=2*Math.tan(THREE.MathUtils.degToRad(camera.fov)/2)/(container.clientHeight||540);
-    for(const marker of objectMarkers){const [w,h]=marker.label.userData.pixels;marker.label.scale.set(w*perPixel,h*perPixel,1);}
+    for(const marker of [...objectMarkers,...crackMarkers]){const [w,h]=marker.label.userData.pixels;marker.label.scale.set(w*perPixel,h*perPixel,1);}
   }
   function resize(){
     const width=container.clientWidth,height=container.clientHeight;if(!width||!height)return;
@@ -193,7 +195,7 @@ export function createSeabedViewer(container,{onSelectScan,onSelectObject=()=>{}
     content.traverse(object=>{object.geometry?.dispose();for(const material of [object.material].flat())if(material){material.map?.dispose();material.dispose();}});
     for(const material of Object.values(materials??{})){material?.map?.dispose();material?.dispose();}
     for(const marker of markers)for(const texture of marker.textures)texture.dispose();
-    scene.remove(content);content=null;markers=[];objectMarkers=[];section=null;crackLines=null;
+    scene.remove(content);content=null;markers=[];objectMarkers=[];section=null;crackArea=crackPatch=crackLines=crackLabels=null;crackMarkers=[];
   }
 
   // Local (east, north) metres and grid axes in three.js space.
@@ -212,6 +214,12 @@ export function createSeabedViewer(container,{onSelectScan,onSelectObject=()=>{}
       const {object}=marker,top=-object.topDepth*exaggeration,above=Math.max(.6,.6*exaggeration);
       marker.stem.geometry.setFromPoints([new THREE.Vector3(object.x,top,-object.y),new THREE.Vector3(object.x,above,-object.y)]);
       marker.label.position.set(object.x,above,-object.y);
+    }
+    // Crack labels stand higher than object labels, so the two do not overlap.
+    for(const marker of crackMarkers){
+      const floor=-marker.depth*exaggeration,above=Math.max(1,exaggeration);
+      marker.stem.geometry.setFromPoints([new THREE.Vector3(marker.x,floor,-marker.y),new THREE.Vector3(marker.x,above,-marker.y)]);
+      marker.label.position.set(marker.x,above,-marker.y);
     }
   }
 
@@ -293,6 +301,7 @@ export function createSeabedViewer(container,{onSelectScan,onSelectObject=()=>{}
       const group=new THREE.Group();group.add(stem,label);content.add(group);
       return {object,stem,label,group,text};
     });
+    drawCrackArea();drawCrackLines();
     selectedObject=-1;placeMarkers();applyMode();applyOverlays();
     scene.add(content);resize();fit();
   }
@@ -304,11 +313,17 @@ export function createSeabedViewer(container,{onSelectScan,onSelectObject=()=>{}
       const target=seabed.geometry.getAttribute('color');target.array.set(colours[mode==='sonar'?'depth':mode]);target.needsUpdate=true;
       seabed.material=materials.colour;
     }
+    applyOverlays();
   }
   function applyOverlays(){
     if(contours)contours.visible=shown.contours;
     if(overlay)overlay.visible=shown.shadows;
     for(const marker of objectMarkers)marker.group.visible=shown.objects;
+    // The full-detail picture is sonar, so it shows with the Sonar colours only; the outline always does.
+    if(crackArea)crackArea.visible=shown.cracks;
+    if(crackPatch)crackPatch.visible=seabed?.material===materials?.sonar;
+    if(crackLines)crackLines.visible=shown.cracks;
+    if(crackLabels)crackLabels.visible=shown.cracks;
   }
   function setColour(next){mode=next;applyMode();render();}
   function setOverlay(name,on){shown[name]=on;applyOverlays();render();}
@@ -374,29 +389,122 @@ export function createSeabedViewer(container,{onSelectScan,onSelectObject=()=>{}
     const geometry=new THREE.BufferGeometry();geometry.setAttribute('position',new THREE.Float32BufferAttribute(position,3));geometry.setIndex(index);
     return new THREE.Mesh(geometry,new THREE.MeshBasicMaterial({color,opacity,transparent:true,depthTest:false,depthWrite:false,side:THREE.DoubleSide}));
   }
-  // Crack-screening candidates, laid on the seabed as coloured bands with a dark outline (white when
-  // selected), so they stand out on any colouring: [{local:[[x,y],[x,y]], colour, selected}].
-  function setLines(items=[]){
-    if(crackLines){vertical.remove(crackLines);crackLines.traverse(object=>{object.geometry?.dispose();object.material?.dispose();});crackLines=null;}
-    if(!model||!items.length){render();return;}
-    crackLines=new THREE.Group();
-    for(const {local:[[x0,y0],[x1,y1]],colour,selected} of items){
-      const casing=band(x0,y0,x1,y1,selected?.36:.26,selected?0xffffff:0x101418,.9),inner=band(x0,y0,x1,y1,selected?.18:.14,colour,1);
-      if(!casing||!inner){for(const mesh of [casing,inner])if(mesh){mesh.geometry.dispose();mesh.material.dispose();}continue;}
-      // From far away the bands are thinner than a pixel: a hairline down the middle keeps the line visible.
-      const n=Math.max(2,Math.ceil(Math.hypot(x1-x0,y1-y0)/.1)),points=[];
-      for(let k=0;k<=n;k++){const x=x0+(x1-x0)*k/n,y=y0+(y1-y0)*k/n,d=seabedDepthAt(model,x,y);if(!Number.isNaN(d))points.push(new THREE.Vector3(x,-d+.02,-y));}
-      const hairline=line(points,new THREE.LineBasicMaterial({color:colour,depthTest:false,transparent:true}));
-      casing.renderOrder=selected?14:12;inner.renderOrder=hairline.renderOrder=selected?15:13;crackLines.add(casing,inner,hairline);
+  // ---- Crack screening ----
+  // The screened stretch: its full-detail sonar picture draped on the bed, and an outline around it.
+  function drawCrackArea(){
+    if(crackArea){vertical.remove(crackArea);crackArea.traverse(object=>{object.geometry?.dispose();if(object.material){object.material.map?.dispose();object.material.dispose();}});}
+    crackArea=crackPatch=null;
+    const result=cracks.result;if(!model||!result?.track)return;
+    const {width:W,height:H,px,py,maxOffset,values,valid}=result.image,track=result.track;
+    // The picture in the Sonar colours, stretched like the mosaic (2nd to 98th percentile); no data is transparent.
+    const sample=[];for(let k=0;k<values.length;k+=11)if(valid[k])sample.push(values[k]);sample.sort((a,b)=>a-b);
+    const low=sample[Math.floor(sample.length*.02)]??0,high=sample[Math.floor(sample.length*.98)]??255;
+    let step=1;const most=renderer.capabilities.maxTextureSize||4096;while(W/step>most||H/step>most)step++;
+    const tw=Math.ceil(W/step),th=Math.ceil(H/step),rgba=new Uint8Array(tw*th*4);
+    for(let b=0;b<th;b++)for(let a=0;a<tw;a++){
+      const k=b*step*W+a*step;if(!valid[k])continue;
+      const c=color(.12+.88*Math.max(0,Math.min(1,(values[k]-low)/Math.max(1,high-low))));rgba.set([c[0],c[1],c[2],255],(b*tw+a)*4);
     }
-    vertical.add(crackLines);render();
+    // A mesh following the bed, a vertex every 8 cm or so; each picture row lies across the track at its ping.
+    const cs=Math.max(1,Math.round(.08/px)),rs=Math.max(1,Math.round(.08/py)),cols=Math.ceil(W/cs),rows=Math.ceil(H/rs);
+    const positions=new Float32Array(cols*rows*3),uvs=new Float32Array(cols*rows*2),ok=new Uint8Array(cols*rows),index=[];
+    const at=(i,j)=>{const t=j*4,o=i*px-maxOffset;return [track[t]+o*track[t+2],track[t+1]+o*track[t+3]];};
+    for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
+      const i=Math.min(W-1,c*cs),j=Math.min(H-1,r*rs),[x,y]=at(i,j),d=seabedDepthAt(model,x,y),v=r*cols+c;
+      ok[v]=!Number.isNaN(d)&&x===x;positions.set([ok[v]?x:0,ok[v]?-d+.01:0,ok[v]?-y:0],v*3);uvs.set([(i+.5)/W,(j+.5)/H],v*2);
+    }
+    for(let r=0;r<rows-1;r++)for(let c=0;c<cols-1;c++){const a=r*cols+c,b=a+1,e=a+cols,f=e+1;if(ok[a]&&ok[b]&&ok[e]&&ok[f])index.push(a,b,e,b,f,e);}
+    crackArea=new THREE.Group();
+    if(index.length){
+      const geometry=new THREE.BufferGeometry();
+      geometry.setAttribute('position',new THREE.BufferAttribute(positions,3));geometry.setAttribute('uv',new THREE.BufferAttribute(uvs,2));
+      geometry.setIndex(index);geometry.computeVertexNormals();
+      crackPatch=new THREE.Mesh(geometry,new THREE.MeshStandardMaterial({map:dataTexture(rgba,tw,th,true),alphaTest:.5,roughness:.88,metalness:0,side:THREE.DoubleSide,polygonOffset:true,polygonOffsetFactor:-2,polygonOffsetUnits:-4}));
+      crackPatch.renderOrder=1;crackArea.add(crackPatch);
+    }
+    // Outline: the outermost echoes of each row, smoothed over a metre, closed across both ends.
+    const every=Math.max(1,Math.round(.25/py)),port=[],starboard=[];
+    for(let j=0;j<H;j+=every){
+      let lo=-1,hi=-1;for(let i=0;i<W;i++)if(valid[j*W+i]){if(lo<0)lo=i;hi=i;}
+      if(lo>=0&&track[j*4]===track[j*4]){starboard.push([lo,j]);port.push([hi,j]);}
+    }
+    const smooth=edge=>edge.map(([,j],n)=>{const w=edge.slice(Math.max(0,n-2),n+3).map(([i])=>i).sort((a,b)=>a-b);return [w[w.length>>1],j];});
+    const ends=(a,b)=>Array.from({length:21},(_,k)=>[a[0]+(b[0]-a[0])*k/20,a[1]]);
+    if(port.length>=2){
+      const s=smooth(starboard),p=smooth(port).reverse(),loop=[...s,...ends(s.at(-1),p[0]),...p,...ends(p.at(-1),s[0])],points=[];
+      for(const [i,j] of loop){const [x,y]=at(i,j),d=seabedDepthAt(model,x,y);if(!Number.isNaN(d))points.push(new THREE.Vector3(x,-d+.03,-y));}
+      const outline=line(points,new THREE.LineDashedMaterial({color:0xf2f5f7,dashSize:.35,gapSize:.2,depthTest:false,transparent:true,opacity:.85}));
+      outline.computeLineDistances();outline.renderOrder=11;crackArea.add(outline);
+    }
+    vertical.add(crackArea);
   }
-  // Moves the camera to look at a point of the seabed from a few metres away.
-  function focusPoint(x,y){
-    if(!model)return false;const d=seabedDepthAt(model,x,y);if(Number.isNaN(d))return false;
-    const target=toScene(x,y,d*exaggeration),{along,across}=axes();
-    flyTo(target,target.clone().add(along.clone().multiplyScalar(-.62).add(across.clone().multiplyScalar(.18)).add(new THREE.Vector3(0,.76,0)).normalize().multiplyScalar(6)));
+  // A flat band of the given width laid on the seabed from (x0,y0) to (x1,y1), or null where there is no bed.
+  function band(x0,y0,x1,y1,width,color,opacity){
+    const length=Math.hypot(x1-x0,y1-y0);if(!(length>0))return null;
+    const ux=(x1-x0)/length,uy=(y1-y0)/length,half=width/2,n=Math.max(2,Math.ceil((length+width)/.1)),position=[],index=[],ok=[];
+    for(let k=0;k<=n;k++){
+      const t=-half+(length+width)*k/n,x=x0+ux*t,y=y0+uy*t,centre=seabedDepthAt(model,x,y);ok.push(!Number.isNaN(centre));
+      for(const s of [1,-1]){const sx=x-s*uy*half,sy=y+s*ux*half,d=seabedDepthAt(model,sx,sy),depth=Number.isNaN(d)?centre:d;position.push(sx,Number.isNaN(depth)?0:-depth+.02,-sy);}
+    }
+    for(let k=0;k<n;k++)if(ok[k]&&ok[k+1])index.push(2*k,2*k+1,2*k+2,2*k+1,2*k+3,2*k+2);
+    if(!index.length)return null;
+    const geometry=new THREE.BufferGeometry();geometry.setAttribute('position',new THREE.Float32BufferAttribute(position,3));geometry.setIndex(index);
+    return new THREE.Mesh(geometry,new THREE.MeshBasicMaterial({color,opacity,transparent:true,depthTest:false,depthWrite:false,side:THREE.DoubleSide}));
+  }
+  // The lines found, each framed on the bed by a coloured rectangle with a dark outline (white when selected),
+  // so the line itself stays visible inside it on the full-detail picture; lines with a label get a numbered
+  // marker like the objects'. lines: [{index, local:[[x,y],[x,y]], colour, selected, label}]
+  function drawCrackLines(){
+    for(const group of [crackLines,crackLabels])if(group){group.parent?.remove(group);group.traverse(object=>{object.geometry?.dispose();if(object.material){object.material.map?.dispose();object.material.dispose();}});}
+    crackLines=crackLabels=null;crackMarkers=[];
+    if(!model||!cracks.lines.length)return;
+    crackLines=new THREE.Group();crackLabels=new THREE.Group();
+    for(const {index,local:[[x0,y0],[x1,y1]],colour,selected,label} of cracks.lines){
+      const length=Math.hypot(x1-x0,y1-y0);if(!(length>0))continue;
+      const ux=(x1-x0)/length,uy=(y1-y0)/length,w=selected?.2:.15,nx=-uy*w,ny=ux*w,ax=x0-ux*w,ay=y0-uy*w,bx=x1+ux*w,by=y1+uy*w;
+      const edges=[[ax+nx,ay+ny,bx+nx,by+ny],[ax-nx,ay-ny,bx-nx,by-ny],[ax+nx,ay+ny,ax-nx,ay-ny],[bx+nx,by+ny,bx-nx,by-ny]];
+      for(const [ex0,ey0,ex1,ey1] of edges){
+        const casing=band(ex0,ey0,ex1,ey1,selected?.12:.09,selected?0xffffff:0x101418,.9),inner=band(ex0,ey0,ex1,ey1,selected?.06:.045,colour,1);
+        if(casing){casing.renderOrder=selected?14:12;crackLines.add(casing);}
+        if(inner){inner.renderOrder=selected?15:13;crackLines.add(inner);}
+      }
+      // From far away the frame is thinner than a pixel: hairlines along its long sides keep it visible.
+      for(const [ex0,ey0,ex1,ey1] of edges.slice(0,2)){
+        const n=Math.max(2,Math.ceil(length/.1)),points=[];
+        for(let k=0;k<=n;k++){const x=ex0+(ex1-ex0)*k/n,y=ey0+(ey1-ey0)*k/n,d=seabedDepthAt(model,x,y);if(!Number.isNaN(d))points.push(new THREE.Vector3(x,-d+.02,-y));}
+        if(points.length<2)continue;
+        const hairline=line(points,new THREE.LineBasicMaterial({color:colour,depthTest:false,transparent:true}));hairline.renderOrder=selected?15:13;crackLines.add(hairline);
+      }
+      if(!label)continue;
+      const x=(x0+x1)/2,y=(y0+y1)/2,depth=seabedDepthAt(model,x,y);if(Number.isNaN(depth))continue;
+      const stem=line([new THREE.Vector3(),new THREE.Vector3()],new THREE.LineBasicMaterial({color:colour,transparent:true,opacity:.9}));stem.frustumCulled=false;
+      const sprite=textSprite([label],{selected,accent:colour});sprite.userData.crack=index;sprite.renderOrder=selected?17:16;
+      crackLabels.add(stem,sprite);crackMarkers.push({index,x,y,depth,stem,label:sprite});
+    }
+    vertical.add(crackLines);content.add(crackLabels);
+  }
+  // result: an inspectLining result (or null); lines as for drawCrackLines. The picture is only redrawn for a new result.
+  function setCracks(result,lines=[]){
+    const changed=result!==cracks.result;cracks={result,lines};
+    if(!model){render();return;}
+    if(changed)drawCrackArea();
+    drawCrackLines();placeMarkers();sizeLabels();applyOverlays();render();
+  }
+  const setCrackLines=lines=>setCracks(cracks.result,lines);
+  // Whether the model reaches a point (local metres).
+  const covers=(x,y)=>Boolean(model)&&!Number.isNaN(seabedDepthAt(model,x,y));
+  // Moves the camera to frame a line on the bed, from across and a little behind, a few metres away.
+  function focusLine([[x0,y0],[x1,y1]],side='port'){
+    if(!model)return false;const x=(x0+x1)/2,y=(y0+y1)/2,d=seabedDepthAt(model,x,y);if(Number.isNaN(d))return false;
+    const target=toScene(x,y,d*exaggeration),{along,across}=axes(),distance=Math.max(5,.9*Math.hypot(x1-x0,y1-y0));
+    flyTo(target,target.clone().add(along.clone().multiplyScalar(-.62).add(across.clone().multiplyScalar(side==='starboard'?-.18:.18)).add(new THREE.Vector3(0,.76,0)).normalize().multiplyScalar(distance)));
     return true;
+  }
+  // Moves the camera to frame the whole screened stretch.
+  function focusCrackArea(){
+    const track=cracks.result?.track;if(!model||!track)return false;
+    const rows=track.length/4,first=[track[0],track[1]],last=[track[(rows-1)*4],track[(rows-1)*4+1]];
+    return focusLine([first,last]);
   }
   function resetView(){if(model){cancelAnimationFrame(flight);fit();}}
 
@@ -406,25 +514,27 @@ export function createSeabedViewer(container,{onSelectScan,onSelectObject=()=>{}
     const box=renderer.domElement.getBoundingClientRect();
     pointer.set((event.clientX-box.left)/box.width*2-1,-(event.clientY-box.top)/box.height*2+1);
     raycaster.setFromCamera(pointer,camera);
-    const targets=[...markers.filter(marker=>marker.dot.visible).flatMap(marker=>[marker.label,marker.dot]),...(shown.objects?objectMarkers.map(marker=>marker.label):[])];
+    const targets=[...markers.filter(marker=>marker.dot.visible).flatMap(marker=>[marker.label,marker.dot]),...(shown.objects?objectMarkers.map(marker=>marker.label):[]),...(shown.cracks?crackMarkers.map(marker=>marker.label):[])];
     return raycaster.intersectObjects(targets,false)[0]?.object.userData??null;
   };
   renderer.domElement.addEventListener('pointerdown',event=>{down={x:event.clientX,y:event.clientY};});
   renderer.domElement.addEventListener('pointerup',event=>{
     if(!down||Math.hypot(event.clientX-down.x,event.clientY-down.y)>5)return;
-    const found=hit(event);if(found?.scan!=null)onSelectScan(found.scan);else if(found?.object!=null)onSelectObject(found.object);
+    const found=hit(event);if(found?.scan!=null)onSelectScan(found.scan);else if(found?.object!=null)onSelectObject(found.object);else if(found?.crack!=null)onSelectCrack(found.crack);
   });
-  renderer.domElement.addEventListener('pointermove',event=>{if(!event.buttons&&(markers.length||objectMarkers.length))renderer.domElement.style.cursor=hit(event)?'pointer':'';});
+  renderer.domElement.addEventListener('pointermove',event=>{if(!event.buttons&&(markers.length||objectMarkers.length||crackMarkers.length))renderer.domElement.style.cursor=hit(event)?'pointer':'';});
 
   // Where a scan label (or an object label) is drawn, in CSS pixels from the canvas corner.
   const project=object=>{const point=object.getWorldPosition(new THREE.Vector3()).project(camera),box=renderer.domElement.getBoundingClientRect();return {x:(point.x+1)/2*box.width,y:(1-point.y)/2*box.height};};
   const screenPosition=index=>project(markers[index].label);
   const objectScreenPosition=index=>{const {label}=objectMarkers[index],p=project(label);return {x:p.x,y:p.y-6};};
+  const crackScreenPosition=index=>{const marker=crackMarkers.find(m=>m.index===index);if(!marker)return null;const p=project(marker.label);return {x:p.x,y:p.y-6};};
   const toBlob=()=>new Promise(resolve=>{render();renderer.domElement.toBlob(resolve,'image/png');});
   function clear(){dispose();model=null;render();}
-  const state=()=>({mode:seabed?.material===materials?.sonar?'sonar':mode,overlays:{...shown},objects:objectMarkers.length,exaggeration,selectedObject});
+  const state=()=>({mode:seabed?.material===materials?.sonar?'sonar':mode,overlays:{...shown},objects:objectMarkers.length,exaggeration,selectedObject,
+    cracks:{lines:crackLines?.children.length?cracks.lines.length:0,labels:crackMarkers.length,picture:Boolean(crackPatch?.visible&&crackArea?.visible),outline:Boolean(crackArea?.children.some(child=>child.isLine))}});
 
-  const api={show,clear,setExaggeration,setColour,setOverlay,select,selectObject,focusObject,setSection,setLines,focusPoint,resetView,screenPosition,objectScreenPosition,toBlob,state};
+  const api={show,clear,setExaggeration,setColour,setOverlay,select,selectObject,focusObject,setSection,setCracks,setCrackLines,covers,focusLine,focusCrackArea,resetView,screenPosition,objectScreenPosition,crackScreenPosition,toBlob,state};
   container.seabedViewer=api;   // reachable from the page for tests and debugging
   return api;
 }

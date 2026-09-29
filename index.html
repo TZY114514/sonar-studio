@@ -12,10 +12,10 @@
   <!-- Apply a saved theme choice before the first paint. -->
   <script>try{const theme=localStorage.getItem('sonar-studio-theme');if(theme==='light'||theme==='dark')document.documentElement.dataset.theme=theme;}catch{}</script>
   <link rel="stylesheet" href="./vendor/leaflet/leaflet.css">
-  <link rel="stylesheet" href="./app.css">
+  <link rel="stylesheet" href="./app.css?v=e671d690ea">
   <script defer src="./vendor/leaflet/leaflet.js"></script>
   <script type="importmap">{"imports":{"three":"./vendor/three/three.module.js"}}</script>
-  <script type="module" src="./app.js"></script>
+  <script type="module" src="./app.js?v=e671d690ea"></script>
 </head>
 <body>
   <svg class="icon-sprite" aria-hidden="true">
@@ -166,7 +166,7 @@
       <div id="seabed-legend" class="seabed-legend" aria-label="Colour key"></div>
       <div class="seabed-tools">
         <div class="segmented" role="radiogroup" aria-label="Colour the model by"><label><input type="radio" name="seabed-colour" value="sonar" checked disabled><span>Sonar</span></label><label><input type="radio" name="seabed-colour" value="depth" disabled><span>Depth</span></label><label><input type="radio" name="seabed-colour" value="relief" disabled><span>Relief</span></label><label><input type="radio" name="seabed-colour" value="source" disabled><span>Source</span></label></div>
-        <div class="overlay-toggles" role="group" aria-label="Show on the model"><label class="check-label"><input id="seabed-contours" type="checkbox" checked disabled> Contours</label><label class="check-label"><input id="seabed-shadows" type="checkbox" disabled> Shadows</label><label class="check-label"><input id="seabed-objects" type="checkbox" checked disabled> Objects</label></div>
+        <div class="overlay-toggles" role="group" aria-label="Show on the model"><label class="check-label"><input id="seabed-contours" type="checkbox" checked disabled> Contours</label><label class="check-label"><input id="seabed-shadows" type="checkbox" disabled> Shadows</label><label class="check-label"><input id="seabed-objects" type="checkbox" checked disabled> Objects</label><label class="check-label"><input id="seabed-cracks" type="checkbox" checked disabled> Cracks</label></div>
         <label class="slider"><span>Vertical exaggeration</span><input id="seabed-exaggeration" type="range" min="1" max="20" step="0.5" value="3" disabled><output id="seabed-exaggeration-value" for="seabed-exaggeration">3×</output></label>
         <span class="tool-spacer"></span>
         <button type="button" id="seabed-reset" class="btn btn-secondary btn-sm" disabled><svg class="icon" aria-hidden="true"><use href="#i-reset"/></svg>Reset view</button>
@@ -182,7 +182,7 @@
           <div class="table-wrap"><table id="objects-table" class="objects-table"><thead><tr><th scope="col">#</th><th scope="col">Type</th><th scope="col">Height</th><th scope="col">Size</th><th scope="col">Position</th><th scope="col">Along</th></tr></thead><tbody></tbody></table><p id="objects-empty" class="objects-empty">No objects detected in this stretch.</p></div>
         </section>
       </div>
-      <p class="guide">Drag to rotate, scroll or pinch to zoom, and right-drag or use two fingers to pan. Click a numbered point or an object to show its scan and cross-section. The model covers the chosen stretch of route, centred on the selected point. Depth under the boat is measured by the primary sonar. The bed on either side, the bank slopes and the object heights are reconstructed from the sidescan: banks from where the echoes end (the waterline) and where they change character (the toe), objects from the length of their shadows, and bumps and hollows from echo brightness. Treat them as estimates. Not for navigation.</p>
+      <p class="guide">Drag to rotate, scroll or pinch to zoom, and right-drag or use two fingers to pan. Click a numbered point, an object or a crack label to show its scan and cross-section. After crack screening, the screened stretch is shown at full detail in Sonar colours, outlined, with each line it found framed on the bed. The model covers the chosen stretch of route, centred on the selected point. Depth under the boat is measured by the primary sonar. The bed on either side, the bank slopes and the object heights are reconstructed from the sidescan: banks from where the echoes end (the waterline) and where they change character (the toe), objects from the length of their shadows, and bumps and hollows from echo brightness. Treat them as estimates. Not for navigation.</p>
     </section>
 
     <section class="card crack-card" aria-labelledby="crack-title">
@@ -202,10 +202,12 @@
         <label class="slider"><span>Contrast</span><input id="crack-contrast" type="range" min="0" max="100" value="50" disabled><output id="crack-contrast-value" for="crack-contrast">50</output></label>
         <label class="check-label"><input id="crack-show-low" type="checkbox" disabled> Show faint lines</label>
         <span class="tool-spacer"></span>
+        <button type="button" id="crack-3d" class="btn btn-secondary btn-sm" disabled><svg class="icon" aria-hidden="true"><use href="#i-cube"/></svg>View in 3D</button>
         <button type="button" id="crack-download" class="btn btn-secondary btn-sm" disabled><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>GeoJSON</button>
       </div>
-      <div class="table-wrap crack-table-wrap"><table id="crack-table" class="objects-table crack-table"><thead><tr><th scope="col">#</th><th scope="col">What</th><th scope="col">Runs</th><th scope="col">Length</th><th scope="col">Size</th><th scope="col">Position</th><th scope="col">Along</th><th scope="col">Confidence</th></tr></thead><tbody></tbody></table><p class="objects-empty">No likely or possible cracks in this stretch.</p></div>
-      <p class="guide">The stretch is shown as the sonar saw it: along the route from left to right, port at the top, ground distance from the boat up and down. Drag and scroll to look closer; click the image to see that scan, or a line or row to select it. Lines that stand out of the sonar's speckle are marked: dark lines (gaps and shadows) and lit edges along, across or diagonal to the canal. Evenly spaced lines across the canal are reported as joints. The strip under the boat, the bank toes, the waterline and detected objects are not screened. <strong>GeoJSON</strong> downloads the listed lines. The size of a crack or step comes from the length of its shadow and is rough. Hairline cracks, and anything under sediment, cannot be seen by this sonar. These are possible cracks to check on site, not confirmed defects.</p>
+      <div class="table-wrap crack-table-wrap"><table id="crack-table" class="objects-table crack-table"><thead><tr><th scope="col">#</th><th scope="col">What</th><th scope="col">Runs</th><th scope="col">Length</th><th scope="col">Size</th><th scope="col">Position</th><th scope="col">Along</th><th scope="col">Confidence</th></tr></thead><tbody></tbody></table><p id="crack-none" class="objects-empty"></p></div>
+      <p class="guide"><strong>Reading the picture.</strong> The stretch is shown as the sonar saw it: along the route from left to right, port at the top, ground distance from the boat up and down. Grey is ordinary bed and lighter is a stronger echo. Black means no data: beyond the waterline, and in bands across the picture where pings are missing because the boat turned or the GPS jumped. Dark smudges on the bed are acoustic shadows behind objects. Drag and scroll to look closer; click the picture to see that scan, or a line or row to select it. <strong>View in 3D</strong> shows the stretch on the 3D model at full detail, with each line framed.</p>
+      <p class="guide"><strong>What is marked.</strong> Straight lines that stand out of the speckle: dark lines (gaps and shadows) and lit edges, along, across or diagonal to the canal. Evenly spaced lines across the canal are reported as joints. The strip under the boat, the bank toes, the waterline and detected objects are not screened. The size of a crack or step is estimated from its shadow and is rough. Hairline cracks, and anything under sediment, cannot be seen by this sonar. These are possible cracks to check on site, not confirmed defects; <strong>GeoJSON</strong> downloads the listed lines.</p>
     </section>
   </main>
   <div id="drop-overlay" class="drop-overlay" hidden><div><svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg>Drop SL3 and BIN files to load them</div></div>

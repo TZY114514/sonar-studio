@@ -322,6 +322,8 @@ input[type=checkbox],input[type=radio]{accent-color:var(--accent)}
 .seabed-legend .chip-line[data-dash=dotted]:after{border-top-style:dotted}
 .seabed-legend .chip-fill:after{inset:3px 6px;border-radius:2px;background:var(--mark)}
 .seabed-legend .chip-label:after{inset:3px 4px;border-radius:3px;border:1.5px solid var(--mark)}
+.seabed-legend .chip-area:after{inset:3px 3px;border-radius:2px;border:1.5px dashed var(--mark)}
+.crack-table-wrap:not([data-screened]) .objects-empty{display:none}
 .overlay-toggles{display:inline-flex;align-items:center;gap:14px}
 .overlay-toggles .check-label{font-size:13px}
 .seabed-detail{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:18px;margin-top:18px}

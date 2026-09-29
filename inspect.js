@@ -11,7 +11,7 @@
 // noise, then thinned, linked into straight segments and classified. What the sonar cannot show (hairline
 // cracks, anything under sediment) is not found; everything found is a candidate to check on site.
 // All positions below are in metres: x across the track (from the image's starboard edge), y along it.
-import {readSurvey,slidingReference,groundRange,lonLatOf,REF_STEP} from './reconstruct.js';
+import {readSurvey,slidingReference,groundRange,lonLatOf,REF_STEP} from './reconstruct.js?v=e671d690ea';
 
 export const ACROSS=.015;
 const ANGLES=12,LINE_M=.3,FLANK_M=.045;
@@ -82,11 +82,17 @@ export async function inspectLining(file,frames,gps,sync,{timeRange=null,draftM=
     const smoothRef=new Float32Array(reference.length);
     for(let b=0;b<reference.length;b++){let t=0,m=0;for(let q=Math.max(0,b-5);q<=Math.min(reference.length-1,b+5);q++)if(reference[q]>0){t+=reference[q];m++;}smoothRef[b]=m?t/m:0;}
     const sum=new Float32Array(W),count=new Uint16Array(W),all=new Float32Array(W),allCount=new Uint16Array(W),mine=objects.filter(o=>o.k===k&&Math.abs(p.along-o.along)<=o.half);
+    const limit=side.open?side.reach:side.waterline;
+    let edge=0,first=true;   // the first echo shown also fills the picture back to the track line
     for(let i=side.first;i<samples.length;i++){
-      const r=(i+.5)*dr,g=groundRange(r,p.H,draftM,side),ref=smoothRef[Math.floor(r/REF_STEP)];
-      if(g==null||!(ref>2)||g>(side.open?side.reach:side.waterline))continue;
+      const r=(i+.5)*dr,g=groundRange(r,p.H,draftM,side),ref=smoothRef[Math.floor(r/REF_STEP)],near=edge;
+      edge=groundRange((i+1)*dr,p.H,draftM,side)??0;
+      if(g==null||!(ref>2)||g>limit)continue;
       const c=column(sign*g),v=samples[i]/ref;if(c<0||c>=W)continue;
-      all[c]+=v;allCount[c]++;   // the picture shows everything; only the lining is screened
+      // The picture shows everything, each sample over all the columns its patch of ground covers: next to
+      // the track, where the sound meets the bed steeply, one sample spans several. Only the lining is screened.
+      const a=column(first?0:sign*near),b=column(sign*Math.min(limit,Math.max(edge,g)));first=false;
+      for(let q=Math.max(0,Math.min(a,b));q<=Math.min(W-1,Math.max(a,b));q++){all[q]+=v;allCount[q]++;}
       if(g<Math.max(.3,.3*p.H))continue;
       if(!side.open&&(Math.abs(g-side.toe)<.3||g>side.waterline-.5))continue;
       if(mine.some(o=>g>=o.from&&g<=o.to))continue;
@@ -103,6 +109,20 @@ export async function inspectLining(file,frames,gps,sync,{timeRange=null,draftM=
   // 2. The image.
   const img=new Float32Array(W*H).fill(NaN),rowPing=new Int32Array(H).fill(-1);
   pings.forEach((_,n)=>{rowPing[rowOf[n]]=n;img.set(profiles[n],rowOf[n]*W);});
+  // Where each row lies, in local metres: [x, y, lx, ly], the boat's position and the unit vector to port.
+  // GPS jitter moves whole pings by centimetres to decimetres, far more than the picture's detail, so the
+  // positions are interpolated across missing pings and smoothed over 3 m of track. Lines are placed with
+  // them, and the 3D view lays the picture on the bed with them, so both hold their shape.
+  const raw=new Float64Array(H*4),track=new Float32Array(H*4),sums=new Float64Array((H+1)*4),span=Math.max(1,Math.round(1.5/py));
+  pings.forEach((p,n)=>raw.set([p.x,p.y,p.lx,p.ly],rowOf[n]*4));
+  for(let n=1;n<pings.length;n++){const a=rowOf[n-1],b=rowOf[n];for(let j=a+1;j<b;j++)for(let q=0;q<4;q++)raw[j*4+q]=raw[a*4+q]+(raw[b*4+q]-raw[a*4+q])*(j-a)/(b-a);}
+  for(let j=0;j<H;j++)for(let q=0;q<4;q++)sums[(j+1)*4+q]=sums[j*4+q]+raw[j*4+q];
+  for(let j=0;j<H;j++){
+    const h=Math.min(span,j,H-1-j),a=j-h,b=j+h+1;   // symmetric, so the ends are not pulled inwards
+    for(let q=0;q<4;q++)track[j*4+q]=(sums[b*4+q]-sums[a*4+q])/(b-a);
+    const l=Math.hypot(track[j*4+2],track[j*4+3])||1;track[j*4+2]/=l;track[j*4+3]/=l;
+  }
+  const placed=(x,y)=>{const t=Math.min(H-1,Math.max(0,Math.round(y/py)))*4,offset=x-maxOffset;return [track[t]+offset*track[t+2],track[t+1]+offset*track[t+3]];};
 
   // 3. Oriented line filter. Along the track the pings are further apart than the columns, so the noise
   // differs with direction: each direction's responses become z, how many of that direction's own
@@ -181,8 +201,8 @@ export async function inspectLining(file,frames,gps,sync,{timeRange=null,draftM=
     const describe=describeLine(line,{img,W,H,px,py,maxOffset,rowPing,pings,direction});
     if(describe.artefact)continue;
     const ends=[line.lo,line.hi].map(t=>{
-      const x=line.cx+t*line.ux,y=line.cy+t*line.uy,p=toPing(y),offset=x-maxOffset;
-      return {raster:[x/px,y/py],local:[p.x+offset*p.lx,p.y+offset*p.ly]};
+      const x=line.cx+t*line.ux,y=line.cy+t*line.uy;
+      return {raster:[x/px,y/py],local:placed(x,y)};
     });
     const centreOffset=line.cx-maxOffset,score=meanZ*Math.sqrt(line.length/.3),centre=toPing(line.cy);
     // A line that reaches well out on both sides (a joint across the canal) passes under the boat.
@@ -215,7 +235,7 @@ export async function inspectLining(file,frames,gps,sync,{timeRange=null,draftM=
   for(let k=0;k<W*H;k++)if(picture[k]===picture[k]){valid[k]=1;values[k]=Math.max(0,Math.min(255,Math.round(picture[k]*110)));}
   const rowTimes=Float64Array.from(rowPing,n=>n>=0?pings[n].time:NaN);
   progress(1);
-  return {image:{width:W,height:H,px,py,maxOffset,values,valid},rowTimes,candidates,origin:survey.origin,
+  return {image:{width:W,height:H,px,py,maxOffset,values,valid},rowTimes,track,candidates,origin:survey.origin,
     stats:{pings:pings.length,lengthM,noise,threshold:high}};
 }
 

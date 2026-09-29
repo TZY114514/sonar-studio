@@ -1,9 +1,9 @@
-import {FileWindow,scanSl3,scanBin,combineFixes,findAlignment,matchedGpsForFrame,nearestSample,exportAligned,recordingSummary,trackGeoJson,trackGpx} from './engine.js';
-import {buildSeabedModel,seabedDepthAt,seabedBaseAt} from './reconstruct.js';
-import {inspectLining,candidatesGeoJson} from './inspect.js';
-import {createInspectView,CRACK_COLOURS} from './inspect-view.js';
-import {createRouteMap} from './route-map.js';
-import {renderScan} from './scan-image.js';
+import {FileWindow,scanSl3,scanBin,combineFixes,findAlignment,matchedGpsForFrame,nearestSample,exportAligned,recordingSummary,trackGeoJson,trackGpx} from './engine.js?v=e671d690ea';
+import {buildSeabedModel,seabedDepthAt,seabedBaseAt} from './reconstruct.js?v=e671d690ea';
+import {inspectLining,candidatesGeoJson} from './inspect.js?v=e671d690ea';
+import {createInspectView,CRACK_COLOURS} from './inspect-view.js?v=e671d690ea';
+import {createRouteMap} from './route-map.js?v=e671d690ea';
+import {renderScan} from './scan-image.js?v=e671d690ea';
 
 const $=id=>document.getElementById(id);
 const PREVIEW_SECONDS=30;
@@ -253,6 +253,7 @@ function seabedTools(enabled){
   const model=state.seabed.model;
   for(const id of ['seabed-exaggeration','seabed-reset','seabed-save','seabed-contours','seabed-objects'])$(id).disabled=!enabled;
   $('seabed-shadows').disabled=!enabled||!model?.mosaic;
+  $('seabed-cracks').disabled=!enabled||!state.cracks.result;
   document.querySelectorAll('input[name="seabed-colour"]').forEach(input=>{input.disabled=!enabled||input.value==='sonar'&&!model?.mosaic;});
 }
 function resetSeabed(message){
@@ -265,20 +266,20 @@ function resetSeabed(message){
 
 // The stretch to model: the chosen length of route centred on the selected point (or the preview
 // window), as recording times from the first ping. null means the whole recording.
-function stretchRange(choice){
+function stretchRange(choice,centreTime=null){
   const samples=state.samples;
   if(choice==='all'||samples.length<2)return null;
   // Distance along the route, stepping at least 3 m at a time so GPS jitter does not add up.
   const along=[0];let last=samples[0],base=0;
   for(let i=1;i<samples.length;i++){const d=metresBetween(last,samples[i]);if(d>=3){base+=d;last=samples[i];along.push(base);}else along.push(base+d);}
   for(let i=1;i<along.length;i++)along[i]=Math.max(along[i],along[i-1]);
-  const centre=state.selection?.time??state.previewStart+PREVIEW_SECONDS/2,total=along.at(-1);
+  const centre=centreTime??state.selection?.time??state.previewStart+PREVIEW_SECONDS/2,total=along.at(-1);
   let k=0;for(let i=1;i<samples.length;i++)if(Math.abs(samples[i].time-centre)<Math.abs(samples[k].time-centre))k=i;
   let low=along[k]-Number(choice)/2,high=along[k]+Number(choice)/2;
   if(low<0){high=Math.min(total,high-low);low=0;}
   if(high>total){low=Math.max(0,low-(high-total));high=total;}
   const timeAt=d=>{let i=1;while(i<along.length-1&&along[i]<d)i++;const f=(d-along[i-1])/Math.max(1e-9,along[i]-along[i-1]);return samples[i-1].time+(samples[i].time-samples[i-1].time)*Math.max(0,Math.min(1,f));};
-  return {start:timeAt(low),end:timeAt(high),length:high-low};
+  return {start:timeAt(low),end:timeAt(high),length:high-low,centre};
 }
 // Enough vertical exaggeration for the relief to show: the depth range drawn at about 30 % of the canal's width.
 function defaultExaggeration(model){
@@ -286,34 +287,37 @@ function defaultExaggeration(model){
   return Math.min(20,Math.max(1,Math.round(width*.3/Math.max(.3,model.maxDepth-model.minDepth)*2)/2));
 }
 
-async function buildSeabed(){
+// centre: a recording time to centre the stretch on, instead of the selected point.
+async function buildSeabed({centre=null}={}){
   const seabed=state.seabed,version=++seabed.version,{sonar,frames,gps,sync,scanPoints,summary}=state;
-  const stretch=stretchRange($('seabed-stretch').value),settings={draftM:Number($('seabed-draft').value),sensitivity:Number($('seabed-sensitivity').value),shading:Number($('seabed-shading').value)};
+  const stretch=stretchRange($('seabed-stretch').value,centre),settings={draftM:Number($('seabed-draft').value),sensitivity:Number($('seabed-sensitivity').value),shading:Number($('seabed-shading').value)};
   seabed.building=true;ready();seabedTools(false);
   try{
     seabedStatus('Loading the 3D viewer…','working');
-    const module=await import('./seabed-3d.js');
+    const module=await import('./seabed-3d.js?v=e671d690ea');
     const timeRange=stretch&&[stretch.start+summary.start,stretch.end+summary.start];
     const model=await buildSeabedModel(sonar,frames,gps,sync,{scans:scanPoints,timeRange,...settings,progress:fraction=>{if(version===seabed.version)seabedStatus(`Reconstructing the canal from sonar and GPS · ${Math.round(fraction*100)}%`,'working');}});
     if(version!==seabed.version)return;
-    try{seabed.viewer??=module.createSeabedViewer($('seabed-view'),{onSelectScan:index=>{selectScan(index);seabedStatus(`Scan ${index+1} is shown in the Sonar scan panel and the cross-section.`,'ok');},onSelectObject:selectObject});}
+    try{seabed.viewer??=module.createSeabedViewer($('seabed-view'),{onSelectScan:index=>{selectScan(index);seabedStatus(`Scan ${index+1} is shown in the Sonar scan panel and the cross-section.`,'ok');},onSelectObject:selectObject,onSelectCrack:selectCrack});}
     catch(error){throw /webgl/i.test(error.message)?new Error('this browser has WebGL turned off'):error;}
     seabed.module=module;seabed.model=model;seabed.selectedObject=-1;
     const exaggeration=defaultExaggeration(model);
     $('seabed-exaggeration').value=String(exaggeration);$('seabed-exaggeration-value').textContent=`${exaggeration}×`;
     if(seabedColour()==='sonar'&&!model.mosaic)document.querySelector('input[name="seabed-colour"][value="depth"]').checked=true;
     $('seabed-empty').hidden=true;
-    seabed.viewer.show(model,{exaggeration,colour:seabedColour(),overlays:{contours:$('seabed-contours').checked,shadows:$('seabed-shadows').checked&&Boolean(model.mosaic),objects:$('seabed-objects').checked}});
+    seabed.viewer.show(model,{exaggeration,colour:seabedColour(),overlays:{contours:$('seabed-contours').checked,shadows:$('seabed-shadows').checked&&Boolean(model.mosaic),objects:$('seabed-objects').checked,cracks:$('seabed-cracks').checked}});
     seabed.viewer.select(state.selection?.kind==='scan'?state.selection.index:-1);
     const length=model.sections.at(-1).along-model.sections[0].along,[port,starboard]=model.banks;
     $('seabed-summary').textContent=`${Math.round(length)} m of ${port||starboard?'canal':'survey'} · water up to ${model.maxDepth.toFixed(1)} m deep · ${model.objects.length} object${model.objects.length===1?'':'s'}`;
     const banks=port&&starboard?`banks found on both sides, waterline ${port.waterline.toFixed(1)} m to port and ${starboard.waterline.toFixed(1)} m to starboard`:port||starboard?`bank found to ${port?'port':'starboard'} only`:'no banks within sonar range';
     seabedStatus(`Built from ${count(model.pingsUsed)} ${model.mosaic?'sidescan pings':'soundings'} · ${banks}. Drag to rotate; click an object or a numbered point.`,'ok');
     $('build-seabed-label').textContent='Rebuild 3D model';
+    seabed.viewer.setCracks(state.cracks.result,crackLines());
     drawLegend();drawObjects();updateSection();seabedTools(true);
-    seabed.viewer.setLines(crackLines());
+    return true;
   }catch(error){if(version===seabed.version){seabedStatus(`Could not build the 3D model: ${error.message}`,'error');$('seabed-empty').hidden=false;}}
   finally{if(version===seabed.version){seabed.building=false;ready();}}
+  return false;
 }
 
 // Colour key for the current colouring, plus the overlays that are switched on.
@@ -333,6 +337,11 @@ function drawLegend(){
   if($('seabed-contours').checked){key(chip('#ffffff','line'),`Contour every ${module.contourInterval(model)} m`);key(chip(colours.waterline,'line'),'Waterline');}
   if($('seabed-shadows').checked&&model.mosaic)key(chip(colours.shadow,'fill'),'Acoustic shadow');
   if($('seabed-objects').checked&&model.objects.length)key(chip(colours.marker,'label'),'Object, with height');
+  if($('seabed-cracks').checked&&state.cracks.result){
+    const kinds=new Set(shownCracks().map(({c})=>crackColour(c)));
+    for(const [mark,text] of [[CRACK_COLOURS.crack,'Possible crack'],[CRACK_COLOURS.joint,'Joint'],[CRACK_COLOURS.edge,'Lit edge']])if(kinds.has(mark))key(chip(mark,'line'),text);
+    key(chip('#f2f5f7','area'),colour==='sonar'?'Screened for cracks, at full detail':'Screened for cracks');
+  }
 }
 
 // Detected objects, one row each; a row selects the object in 3D, the scan preview and the cross-section.
@@ -460,6 +469,7 @@ function drawSectionChart(chart,{points,section,objects,port,starboard,width}){
 // ---- Crack screening ----
 const CRACK_LEVELS={high:'High',medium:'Medium',low:'Low'};
 const crackColour=c=>c.kind==='joint'?CRACK_COLOURS.joint:c.polarity==='bright'?CRACK_COLOURS.edge:CRACK_COLOURS.crack;
+const shortCrackLabel=c=>c.kind==='joint'?'Joint':c.polarity==='bright'?'Edge':'Crack';
 function crackLabel(c){
   if(c.kind==='joint')return 'Joint';
   if(c.kind==='edge')return 'Lit edge';
@@ -467,17 +477,22 @@ function crackLabel(c){
   return c.detail.startsWith('open crack')?'Open crack':c.direction==='along'?'Crack or step down':'Crack';
 }
 const shownCracks=()=>(state.cracks.result?.candidates??[]).map((c,index)=>({c,index})).filter(({c,index})=>c.confidence!=='low'||$('crack-show-low').checked||index===state.cracks.selected);
-const crackLines=()=>shownCracks().map(({c,index})=>({local:c.local,colour:crackColour(c),selected:index===state.cracks.selected}));
-function crackTools(enabled){for(const id of ['crack-contrast','crack-show-low','crack-download'])$(id).disabled=!enabled||!state.cracks.result;}
+const crackLines=()=>shownCracks().map(({c,index})=>({index,local:c.local,colour:crackColour(c),selected:index===state.cracks.selected,
+  label:c.confidence!=='low'||index===state.cracks.selected?`${shortCrackLabel(c)} ${c.id} · ${c.lengthM.toFixed(1)} m`:null}));
+function crackTools(enabled){
+  for(const id of ['crack-contrast','crack-show-low','crack-download','crack-3d'])$(id).disabled=!enabled||!state.cracks.result;
+  $('seabed-cracks').disabled=!state.seabed.model||!state.cracks.result;
+}
 function resetCracks(message){
   const cracks=state.cracks;cracks.version++;cracks.running=false;cracks.result=null;cracks.selected=-1;
   cracks.view?.clear();$('crack-empty').hidden=false;crackStatus(message);
   $('crack-summary').textContent='Possible cracks, joints and displaced panels in the lining';$('find-cracks-label').textContent='Find possible cracks';
-  $('crack-table').tBodies[0].replaceChildren();$('crack-legend').replaceChildren();crackTools(false);
-  state.seabed.viewer?.setLines([]);
+  $('crack-table').tBodies[0].replaceChildren();$('crack-legend').replaceChildren();delete $('crack-table').parentElement.dataset.screened;crackTools(false);
+  state.seabed.viewer?.setCracks(null,[]);if(state.seabed.model)drawLegend();
 }
 async function findCracks(){
   const cracks=state.cracks,version=++cracks.version,{sonar,frames,gps,sync,summary}=state,stretch=stretchRange($('crack-stretch').value);
+  cracks.centre=stretch?.centre??null;
   cracks.running=true;ready();crackTools(false);
   try{
     const timeRange=stretch&&[stretch.start+summary.start,stretch.end+summary.start];
@@ -492,8 +507,11 @@ async function findCracks(){
     $('crack-summary').textContent=`${Math.round(result.stats.lengthM)} m screened · ${count('high')} high and ${count('medium')} medium confidence`;
     crackStatus(`Screened ${count('high')+count('medium')?`${Math.round(result.stats.lengthM)} m of canal: ${count('high')} high and ${count('medium')} medium-confidence lines to check`:`${Math.round(result.stats.lengthM)} m of canal: no clear lines`}${count('low')?` · ${count('low')} faint lines hidden`:''}. Click a line or a row to see its scan.`,'ok');
     $('find-cracks-label').textContent='Screen again';
+    $('crack-table').parentElement.dataset.screened='';
+    const faint=count('low');
+    $('crack-none').textContent=faint?`No clear lines in this stretch. ${faint} faint ${faint===1?'one is':'ones are'} hidden: tick Show faint lines to see ${faint===1?'it':'them'}.`:'No lines stand out of the speckle in this stretch.';
     drawCracks();drawCrackLegend();crackTools(true);
-    state.seabed.viewer?.setLines(crackLines());
+    state.seabed.viewer?.setCracks(result,crackLines());if(state.seabed.model)drawLegend();
   }catch(error){if(version===cracks.version){crackStatus(`Could not screen this stretch: ${error.message}`,'error');}}
   finally{if(version===cracks.version){cracks.running=false;ready();}}
 }
@@ -517,15 +535,31 @@ function drawCrackLegend(){
 function markCrack(index){
   state.cracks.selected=index;
   for(const row of $('crack-table').tBodies[0].rows)row.setAttribute('aria-selected',String(Number(row.dataset.index)===index));
-  if(state.cracks.result){state.cracks.view?.select(index);state.seabed.viewer?.setLines(crackLines());}
+  if(state.cracks.result){state.cracks.view?.select(index);state.seabed.viewer?.setCrackLines(crackLines());}
 }
 function selectCrack(index){
   const c=state.cracks.result?.candidates[index];if(!c)return;
   markCrack(index);drawCracks();
   const [[lon0,lat0],[lon1,lat1]]=c.lonlat;
   select({kind:'point',time:c.time-state.summary.start,lat:(lat0+lat1)/2,lon:(lon0+lon1)/2,crack:index});
-  const [[x0,y0],[x1,y1]]=c.local;state.seabed.viewer?.focusPoint((x0+x1)/2,(y0+y1)/2);
-  crackStatus(`Line ${c.id}: ${c.detail}, ${c.lengthM.toFixed(1)} m long. Its scan is in the Sonar scan panel.`,'ok');
+  const in3d=state.seabed.viewer?.focusLine(c.local,c.side);
+  crackStatus(`Line ${c.id}: ${c.detail}, ${c.lengthM.toFixed(1)} m long. Its scan is in the Sonar scan panel${in3d?', and the 3D model shows it':''}.`,'ok');
+  if(in3d)seabedStatus(`${shortCrackLabel(c)} ${c.id}: ${c.lengthM.toFixed(1)} m, ${c.side==='both'?'across the canal':`${c.offsetM.toFixed(1)} m to ${c.side}`}. Its scan is in the Sonar scan panel.`,'ok');
+}
+// Shows the screened stretch (or the selected line) in the 3D model, building a model around it if needed.
+async function viewCracksIn3D(){
+  const cracks=state.cracks,result=cracks.result;if(!result)return;
+  const rows=result.track.length/4,middle=Math.floor(rows/2)*4,reaches=()=>[0,middle,(rows-1)*4].every(t=>state.seabed.viewer?.covers(result.track[t],result.track[t+1]));
+  if(!state.seabed.model||!reaches()){
+    if(state.seabed.building)return;
+    $('seabed-view').scrollIntoView({behavior:'smooth',block:'center'});
+    if(!await buildSeabed({centre:cracks.centre})||cracks.result!==result)return;
+  }
+  if(!$('seabed-cracks').checked){$('seabed-cracks').checked=true;state.seabed.viewer.setOverlay('cracks',true);drawLegend();}
+  $('seabed-view').scrollIntoView({behavior:'smooth',block:'center'});
+  const c=result.candidates[cracks.selected];
+  if(c)state.seabed.viewer.focusLine(c.local,c.side);else state.seabed.viewer.focusCrackArea();
+  seabedStatus(`The screened stretch is outlined on the bed${seabedColour()==='sonar'?' and shown at full detail':''}. Click a numbered line to see its scan.`,'ok');
 }
 // A click on the inspection image shows the scan recorded there.
 function pickTime(time){
@@ -601,10 +635,10 @@ document.querySelectorAll('input[name="preview-channel"]').forEach(input=>input.
 for(const id of ['preview-contrast','preview-brightness'])$(id).addEventListener('input',()=>{if(state.previewScan&&!$('sonar-canvas').hidden)drawPreview();});
 $('save-image').addEventListener('click',saveImage);
 $('download-gpx').addEventListener('click',()=>saveRoute('gpx'));
-$('build-seabed').addEventListener('click',buildSeabed);
+$('build-seabed').addEventListener('click',()=>buildSeabed());
 $('seabed-exaggeration').addEventListener('input',event=>{const value=Number(event.target.value);$('seabed-exaggeration-value').textContent=`${value}×`;state.seabed.viewer?.setExaggeration(value);});
 document.querySelectorAll('input[name="seabed-colour"]').forEach(input=>input.addEventListener('change',()=>{state.seabed.viewer?.setColour(input.value);drawLegend();}));
-for(const [id,name] of [['seabed-contours','contours'],['seabed-shadows','shadows'],['seabed-objects','objects']])$(id).addEventListener('change',event=>{state.seabed.viewer?.setOverlay(name,event.target.checked);drawLegend();});
+for(const [id,name] of [['seabed-contours','contours'],['seabed-shadows','shadows'],['seabed-objects','objects'],['seabed-cracks','cracks']])$(id).addEventListener('change',event=>{state.seabed.viewer?.setOverlay(name,event.target.checked);drawLegend();});
 for(const [id,format] of [['seabed-draft',v=>`${v.toFixed(2)} m`],['seabed-sensitivity',v=>`${Math.round(v*100)}%`],['seabed-shading',v=>`${Math.round(v*100)}%`]]){
   $(id).addEventListener('input',event=>{$(`${id}-value`).textContent=format(Number(event.target.value));if(state.seabed.model)seabedStatus('Settings changed · rebuild the model to apply them.','warn');});
 }
@@ -615,7 +649,8 @@ for(const [id,format] of [['crack-sensitivity',v=>`${Math.round(v*100)}%`],['cra
   $(id).addEventListener('input',event=>{$(`${id}-value`).textContent=format(Number(event.target.value));if(state.cracks.result)crackStatus('Settings changed · screen again to apply them.','warn');});
 }
 $('crack-contrast').addEventListener('input',event=>{$('crack-contrast-value').textContent=event.target.value;state.cracks.view?.setContrast(Number(event.target.value));});
-$('crack-show-low').addEventListener('change',event=>{state.cracks.view?.setShowLow(event.target.checked);drawCracks();state.seabed.viewer?.setLines(crackLines());});
+$('crack-show-low').addEventListener('change',event=>{state.cracks.view?.setShowLow(event.target.checked);drawCracks();state.seabed.viewer?.setCrackLines(crackLines());if(state.seabed.model)drawLegend();});
+$('crack-3d').addEventListener('click',viewCracksIn3D);
 // The download holds the lines listed in the table (faint ones only while they are shown).
 $('crack-download').addEventListener('click',()=>{const result=state.cracks.result;if(result)saveBlob(new Blob([JSON.stringify(candidatesGeoJson({...result,candidates:shownCracks().map(({c})=>c)},{name:state.sonar.name}),null,1)],{type:'application/geo+json'}),`${fileStem()}_crack_candidates.geojson`);});
 $('crack-table').addEventListener('click',event=>{const row=event.target.closest('tr[data-index]');if(row)selectCrack(Number(row.dataset.index));});
