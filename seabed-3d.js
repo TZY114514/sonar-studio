@@ -73,11 +73,14 @@ export function createSeabedViewer(container,{onSelectScan}){
   const render=()=>renderer.render(scene,camera);
   controls.addEventListener('change',render);
 
-  let content=null,vertical=null,seabed=null,materials=null,markers=[],model=null,exaggeration=1,home=null;
+  let content=null,vertical=null,seabed=null,materials=null,markers=[],model=null,exaggeration=1,home=null,moved=false;
+  controls.addEventListener('start',()=>{moved=true;});
 
   function resize(){
     const width=container.clientWidth,height=container.clientHeight;if(!width||!height)return;
-    renderer.setSize(width,height);camera.aspect=width/height;camera.updateProjectionMatrix();render();
+    renderer.setSize(width,height);camera.aspect=width/height;camera.updateProjectionMatrix();
+    // Until the user moves the camera, keep the whole survey framed as the view changes shape.
+    if(model&&!moved)fit();else render();
   }
   new ResizeObserver(resize).observe(container);
 
@@ -100,11 +103,14 @@ export function createSeabedViewer(container,{onSelectScan}){
   function fit(){
     const width=model.maxX-model.minX,height=model.maxY-model.minY,extent=Math.max(width,height);
     const target=new THREE.Vector3((model.minX+model.maxX)/2,-(model.minDepth+model.maxDepth)/2*exaggeration,-(model.minY+model.maxY)/2);
-    home={target,position:target.clone().add(new THREE.Vector3(.45*extent,.62*extent,.8*extent))};
+    // Back off far enough for the survey to fit the narrower of the two fields of view, so tall phone views fit too.
+    const vertical=THREE.MathUtils.degToRad(camera.fov),horizontal=2*Math.atan(Math.tan(vertical/2)*camera.aspect);
+    const distance=.86*(camera.aspect<1?1.18:1)*Math.hypot(width,height)/2/Math.tan(Math.min(vertical,horizontal)/2);
+    home={target,position:target.clone().add(new THREE.Vector3(.45,.62,.8).normalize().multiplyScalar(distance))};
     controls.target.copy(home.target);camera.position.copy(home.position);
     controls.minDistance=extent*.03;controls.maxDistance=extent*6;
     sun.position.copy(target).add(new THREE.Vector3(-.6*extent,extent,.25*extent));sun.target.position.copy(target);
-    controls.update();render();
+    controls.update();moved=false;render();
   }
 
   function show(next,{exaggeration:scale=5,texture='sonar'}={}){

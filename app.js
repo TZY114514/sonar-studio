@@ -15,8 +15,13 @@ const CHANNEL_GUIDES={5:'Bright bands show stronger echoes. The dark center band
 const previewChannel=summary=>summary?.counts.sidescan?5:summary?.counts.downscan?2:null;
 const sizeText=bytes=>bytes>=1e9?`${(bytes/1e9).toFixed(2)} GB`:`${(bytes/1e6).toFixed(1)} MB`;
 
+// Status lines carry a state (idle, working, ok, warn or error) that the stylesheet shows as an icon.
+function setStatus(id,text,state='idle'){const line=$(id);line.textContent=text;line.dataset.state=state;}
+const routeStatus=(text,state)=>setStatus('route-status',text,state);
+const seabedStatus=(text,state)=>setStatus('seabed-status',text,state);
+
 function status(mode,message,progress=null){
-  const panel=$('results');panel.className=`results${mode==='error'?' is-error':mode==='working'?' is-working':''}`;
+  const panel=$('results');panel.className=`results is-${mode}`;
   const line=$('results-message');line.replaceChildren();
   if(mode==='working'){const spinner=document.createElement('span');spinner.className='spinner';spinner.setAttribute('aria-hidden','true');line.append(spinner);}
   line.append(document.createTextNode(message));
@@ -28,6 +33,11 @@ function ready(){
   const channels=document.querySelectorAll('#channel-list input:checked').length;
   const okay=Boolean(state.sonar&&state.bins.length&&state.frames&&state.sync?.trusted&&channels&&!state.aligning&&!state.busy);
   $('export-button').disabled=!okay;
+  // A tick on each loading step once it is done, and a solid picker once it holds a file.
+  $('step-sonar').toggleAttribute('data-done',Boolean(state.frames));
+  $('step-gps').toggleAttribute('data-done',Boolean(state.sync?.trusted));
+  $('sonar-name').closest('.file-picker').toggleAttribute('data-loaded',Boolean(state.sonar));
+  $('gps-name').closest('.file-picker').toggleAttribute('data-loaded',state.bins.length>0);
   $('download-gpx').disabled=$('download-geojson').disabled=!(state.trackFixes.length>=2&&!state.aligning);
   $('build-seabed').disabled=!(state.sync?.trusted&&state.trackFixes.length>=2&&!state.aligning&&!state.busy&&!state.seabed.building);
   $('sonar-input').disabled=state.busy||state.aligning;$('gps-input').disabled=state.busy||state.aligning;
@@ -40,8 +50,8 @@ function ready(){
 }
 
 function details(summary){
-  const rows=[['Duration',durationText(summary.duration)],['Primary pings',count(summary.counts.primary)],['Downscan pings',count(summary.counts.downscan)],['Sidescan pings',count(summary.counts.sidescan)],['Typical recorded depth',summary.medianDepth==null?'Unavailable':`${summary.medianDepth.toFixed(2)} m`]];
-  const list=$('recording-details');list.replaceChildren();
+  const rows=[['Duration',durationText(summary.duration).replace(/^0h /,'')],['Typical depth',summary.medianDepth==null?'Unavailable':`${summary.medianDepth.toFixed(2)} m`],['Primary pings',count(summary.counts.primary)],['Downscan pings',count(summary.counts.downscan)],['Sidescan pings',count(summary.counts.sidescan)]];
+  const list=$('recording-details');list.replaceChildren();list.hidden=false;
   for(const [label,value] of rows){const item=document.createElement('div'),dt=document.createElement('dt'),dd=document.createElement('dd');dt.textContent=label;dd.textContent=value;item.append(dt,dd);list.append(item);}
 }
 
@@ -111,7 +121,7 @@ function resetAlignment(){
   state.gps=null;state.sync=null;state.route=[];state.trackFixes=[];state.samples=[];state.scanPoints=[];state.selection=null;state.aligning=false;
   resetSeabed('Match the sonar and GPS files, then build the model.');
   $('route-source').textContent='Waiting for files';
-  $('route-status').textContent='Choose a sonar file and GPS logs to link the route to its scans.';
+  routeStatus('Choose a sonar file and GPS logs to link the route to its scans.');
   $('scan-details').textContent='The scan time and GPS coordinates will appear here.';
   drawRoute();
 }
@@ -134,21 +144,21 @@ async function alignSelection(){
   if(!state.frames||!state.bins.length)return;
   const token=++state.alignmentVersion,bins=[...state.bins],frames=state.frames,summary=state.summary,channel=previewChannel(summary)??0;
   state.aligning=true;ready();$('route-source').textContent='Matching…';
-  $('route-status').textContent='Reading GPS logs and matching their timeline to sonar…';
+  routeStatus('Reading GPS logs and matching their timeline to sonar…','working');
   try{
     const lists=[];
     for(let i=0;i<bins.length;i++){
       if(token!==state.alignmentVersion)return;
-      $('route-status').textContent=`Reading GPS log ${i+1} of ${bins.length}…`;
-      lists.push(await scanBin(bins[i],fraction=>{if(token===state.alignmentVersion)$('route-status').textContent=`Reading GPS log ${i+1} of ${bins.length} · ${Math.round(fraction*100)}%`; }));
+      routeStatus(`Reading GPS log ${i+1} of ${bins.length}…`,'working');
+      lists.push(await scanBin(bins[i],fraction=>{if(token===state.alignmentVersion)routeStatus(`Reading GPS log ${i+1} of ${bins.length} · ${Math.round(fraction*100)}%`,'working');}));
     }
     if(token!==state.alignmentVersion)return;
-    $('route-status').textContent='Matching sonar and GPS timelines…';
+    routeStatus('Matching sonar and GPS timelines…','working');
     await new Promise(resolve=>setTimeout(resolve,0));
     const gps=combineFixes(lists),sync=findAlignment(frames,gps);
     if(token!==state.alignmentVersion)return;
     state.gps=gps;state.sync=sync;
-    if(!sync.trusted){$('route-source').textContent='No verified match';$('route-status').textContent=`GPS match could not be verified: ${sync.reason}. Choose logs from the same trip.`;status('error',`GPS match could not be verified: ${sync.reason}`);drawRoute();return;}
+    if(!sync.trusted){$('route-source').textContent='No verified match';routeStatus(`GPS match could not be verified: ${sync.reason}. Choose logs from the same trip.`,'error');status('error',`GPS match could not be verified: ${sync.reason}`);drawRoute();return;}
     const start=frames[0].timeMs/1000+sync.offset_s,end=frames.at(-1).timeMs/1000+sync.offset_s;
     const fixes=gps.fixes.filter(fix=>fix.t>=start&&fix.t<=end);
     if(fixes.length<2)throw new Error('Too few GPS fixes overlap this sonar recording');
@@ -173,16 +183,16 @@ async function alignSelection(){
     }
     state.scanPoints=points.sort((a,b)=>a.time-b.time);
     $('route-source').textContent='ArduPilot BIN GPS';
-    $('route-status').textContent=points.length?`GPS and sonar matched automatically · ${points.length} scan points. Click a numbered point, or anywhere on the route, to view its scan.`:'GPS and sonar matched, but no scan point passed the position check.';
+    routeStatus(points.length?`GPS and sonar matched automatically · ${points.length} scan points. Click a numbered point, or anywhere on the route, to view its scan.`:'GPS and sonar matched, but no scan point passed the position check.',points.length?'ok':'warn');
     drawRoute();if(points.length)selectScan(0);
     status('ready',`GPS match verified · ${points.length} linked sonar scans ready`);
   }catch(error){
-    if(token===state.alignmentVersion){state.gps=null;state.sync=null;state.route=[];state.trackFixes=[];state.samples=[];state.scanPoints=[];state.selection=null;$('route-source').textContent='Match unavailable';$('route-status').textContent=`Could not match the files: ${error.message}`;drawRoute();status('error',`Could not match the files: ${error.message}`);}
+    if(token===state.alignmentVersion){state.gps=null;state.sync=null;state.route=[];state.trackFixes=[];state.samples=[];state.scanPoints=[];state.selection=null;$('route-source').textContent='Match unavailable';routeStatus(`Could not match the files: ${error.message}`,'error');drawRoute();status('error',`Could not match the files: ${error.message}`);}
   }finally{if(token===state.alignmentVersion){state.aligning=false;ready();}}
 }
 
 async function chooseSonar(file){
-  const version=++state.version;state.alignmentVersion++;state.previewVersion++;state.sonar=file;state.frames=null;state.summary=null;state.previewScan=null;resetAlignment();
+  const version=++state.version;state.alignmentVersion++;state.previewVersion++;state.sonar=file;state.frames=null;state.summary=null;state.previewScan=null;resetAlignment();$('recording-details').hidden=true;
   $('save-image').disabled=true;
   $('sonar-name').textContent=file?`${file.name} · ${sizeText(file.size)}`:'No file selected';
   $('sonar-name').title=file?.name||'';ready();
@@ -233,18 +243,18 @@ function seabedTools(enabled){
 }
 function resetSeabed(message){
   const seabed=state.seabed;seabed.version++;seabed.building=false;seabed.model=null;
-  seabed.viewer?.clear();$('seabed-empty').hidden=false;$('seabed-status').textContent=message;
+  seabed.viewer?.clear();$('seabed-empty').hidden=false;seabedStatus(message);
   $('seabed-summary').textContent='Sonar depth, sidescan and GPS combined';seabedTools(false);
 }
 async function buildSeabed(){
-  const seabed=state.seabed,version=++seabed.version,{sonar,frames,gps,sync,scanPoints}=state,line=$('seabed-status');
+  const seabed=state.seabed,version=++seabed.version,{sonar,frames,gps,sync,scanPoints}=state;
   seabed.building=true;ready();seabedTools(false);
   try{
-    line.textContent='Loading the 3D viewer…';
+    seabedStatus('Loading the 3D viewer…','working');
     const {createSeabedViewer}=await import('./seabed-3d.js');
-    const model=await buildSeabedModel(sonar,frames,gps,sync,{scans:scanPoints,progress:fraction=>{if(version===seabed.version)line.textContent=`Building the seabed from sonar and GPS · ${Math.round(fraction*100)}%`;}});
+    const model=await buildSeabedModel(sonar,frames,gps,sync,{scans:scanPoints,progress:fraction=>{if(version===seabed.version)seabedStatus(`Building the seabed from sonar and GPS · ${Math.round(fraction*100)}%`,'working');}});
     if(version!==seabed.version)return;
-    try{seabed.viewer??=createSeabedViewer($('seabed-view'),{onSelectScan:index=>{selectScan(index);line.textContent=`Scan ${index+1} is shown in the Sonar scan panel.`;}});}
+    try{seabed.viewer??=createSeabedViewer($('seabed-view'),{onSelectScan:index=>{selectScan(index);seabedStatus(`Scan ${index+1} is shown in the Sonar scan panel.`,'ok');}});}
     catch(error){throw /webgl/i.test(error.message)?new Error('this browser has WebGL turned off'):error;}
     seabed.model=model;
     // Start with enough vertical exaggeration for the relief to show: about a tenth of the survey's width.
@@ -257,9 +267,9 @@ async function buildSeabed(){
     seabed.viewer.show(model,{exaggeration,texture});
     seabed.viewer.select(state.selection?.kind==='scan'?state.selection.index:-1);
     $('seabed-summary').textContent=`${Math.round(width)} × ${Math.round(height)} m · depth ${model.minDepth.toFixed(1)}–${model.maxDepth.toFixed(1)} m${model.mosaic?' · sidescan mosaic':' · no sidescan'}`;
-    line.textContent=`Built from ${count(model.soundings)} depth readings${model.mosaic?` and ${count(model.mosaic.pings)} sidescan pings`:''}. Drag to rotate; click a numbered point to preview its scan.`;
+    seabedStatus(`Built from ${count(model.soundings)} depth readings${model.mosaic?` and ${count(model.mosaic.pings)} sidescan pings`:''}. Drag to rotate; click a numbered point to preview its scan.`,'ok');
     seabedTools(true);
-  }catch(error){if(version===seabed.version){line.textContent=`Could not build the 3D model: ${error.message}`;$('seabed-empty').hidden=false;}}
+  }catch(error){if(version===seabed.version){seabedStatus(`Could not build the 3D model: ${error.message}`,'error');$('seabed-empty').hidden=false;}}
   finally{if(version===seabed.version){seabed.building=false;ready();}}
 }
 
@@ -288,6 +298,17 @@ async function exportFiles(){
   }catch(error){status('error',`Export failed: ${error.message}`);}
   finally{state.busy=false;ready();}
 }
+
+// Colour theme: match this device, light or dark. The choice is remembered in this browser only.
+const THEME_KEY='sonar-studio-theme';
+function setTheme(choice){
+  if(choice==='auto')delete document.documentElement.dataset.theme;else document.documentElement.dataset.theme=choice;
+  try{if(choice==='auto')localStorage.removeItem(THEME_KEY);else localStorage.setItem(THEME_KEY,choice);}catch{}
+}
+document.querySelectorAll('input[name="theme"]').forEach(input=>{
+  input.checked=input.value===(document.documentElement.dataset.theme??'auto');
+  input.addEventListener('change',()=>setTheme(input.value));
+});
 
 const routeMap=createRouteMap($('route-map'),{onSelectScan:selectScan,onPick:pickRoutePoint});
 // The map background is opt-in; remember the choice in this browser only.

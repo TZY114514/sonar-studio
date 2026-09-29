@@ -7,7 +7,7 @@ export function createRouteMap(element,{onSelectScan,onPick}){
   map.attributionControl.setPrefix('<a href="https://leafletjs.com">Leaflet</a>');
   // Start and end dots sit above the scan pins, whose tips point at the same places.
   map.createPane('endpoints').style.zIndex=640;
-  const layers=L.layerGroup().addTo(map),empty=element.parentElement.querySelector('.route-empty');
+  const layers=L.layerGroup().addTo(map),empty=element.parentElement.querySelector('.route-empty'),emptyText=empty.querySelector('.route-empty-text')??empty;
   let bounds=null,markers=[],routeShown=false,basemapOn=false,tiles=null;
   // Tiles are fetched only once the user opts in and a route is on screen, so an empty page never contacts OpenStreetMap.
   function syncTiles(){
@@ -38,14 +38,15 @@ export function createRouteMap(element,{onSelectScan,onPick}){
 
   function clear(message){
     layers.clearLayers();markers=[];bounds=null;routeShown=false;
-    empty.textContent=message;empty.hidden=false;syncTiles();
+    emptyText.textContent=message;empty.hidden=false;syncTiles();
   }
 
   function showRoute(route,scanPoints,label){
     layers.clearLayers();empty.hidden=true;routeShown=true;
     const latlngs=route.map(([lon,lat])=>[lat,lon]);
     bounds=L.latLngBounds(latlngs);
-    L.polyline(latlngs,{color:'#07858e',weight:3,lineJoin:'round',lineCap:'round',interactive:false}).addTo(layers);
+    // Colours for the line, markers and window band come from the theme (app.css), via their class names.
+    L.polyline(latlngs,{color:'#07858e',weight:3,lineJoin:'round',lineCap:'round',interactive:false,className:'route-line'}).addTo(layers);
     windowLine.setLatLngs([]).addTo(layers);
     for(const [latlng,name,color] of [[latlngs[0],'start','#1aa982'],[latlngs.at(-1),'end','#e45b4f']])
       L.circleMarker(latlng,{pane:'endpoints',radius:6,color:'#fff',weight:2,fillColor:color,fillOpacity:1,interactive:false,className:`route-${name}-marker`}).addTo(layers);
