@@ -289,6 +289,10 @@ input[type=checkbox],input[type=radio]{accent-color:var(--accent)}
 
 /* ---------- 3D seabed ---------- */
 .seabed-card{margin-top:26px}
+.survey-guide{margin:0 0 12px;padding:10px 13px;border-left:3px solid var(--accent,#087f87);background:var(--surface-2);border-radius:0 8px 8px 0}
+.lake-quality{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:9px 14px;font-size:13px;line-height:1.5;padding-top:4px}
+.lake-quality dt{color:var(--muted)}
+.lake-quality dd{margin:0;text-align:right;font-weight:650;color:var(--ink);font-variant-numeric:tabular-nums}
 .seabed-view{position:relative;height:540px;border:1px solid var(--line);border-radius:var(--radius-md);overflow:hidden;background:var(--viz)}
 .seabed-view:has(.seabed-empty:not([hidden])){height:190px}
 .seabed-canvas{display:block;width:100%;height:100%;touch-action:none}
@@ -324,7 +328,7 @@ input[type=checkbox],input[type=radio]{accent-color:var(--accent)}
 .seabed-legend .chip-label:after{inset:3px 4px;border-radius:3px;border:1.5px solid var(--mark)}
 .seabed-legend .chip-area:after{inset:3px 3px;border-radius:2px;border:1.5px dashed var(--mark)}
 .crack-table-wrap:not([data-screened]) .objects-empty{display:none}
-.overlay-toggles{display:inline-flex;align-items:center;gap:14px}
+.overlay-toggles{display:inline-flex;align-items:center;flex-wrap:wrap;gap:14px}
 .overlay-toggles .check-label{font-size:13px}
 .seabed-detail{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:18px;margin-top:18px}
 .section-panel,.objects-panel{min-width:0;padding:14px 16px 12px;border:1px solid var(--line);border-radius:var(--radius-md);background:var(--surface-2)}

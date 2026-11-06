@@ -12,10 +12,10 @@
   <!-- Apply a saved theme choice before the first paint. -->
   <script>try{const theme=localStorage.getItem('sonar-studio-theme');if(theme==='light'||theme==='dark')document.documentElement.dataset.theme=theme;}catch{}</script>
   <link rel="stylesheet" href="./vendor/leaflet/leaflet.css">
-  <link rel="stylesheet" href="./app.css?v=504b5cb6fd">
+  <link rel="stylesheet" href="./app.css?v=lake-20261106">
   <script defer src="./vendor/leaflet/leaflet.js"></script>
   <script type="importmap">{"imports":{"three":"./vendor/three/three.module.js"}}</script>
-  <script type="module" src="./app.js?v=504b5cb6fd"></script>
+  <script type="module" src="./app.js?v=lake-20261106"></script>
 </head>
 <body>
   <svg class="icon-sprite" aria-hidden="true">
@@ -52,7 +52,7 @@
   <main class="page">
     <section class="hero">
       <h1>Explore sonar on a GPS route</h1>
-      <p>Open a Lowrance SL3 recording and its ArduPilot BIN logs. Sonar and GPS are matched automatically, so you can browse scans along the route, export aligned data and reconstruct the canal in 3D: bed, bank slopes, objects and their sonar shadows. Everything runs in your browser; files are never uploaded.</p>
+      <p>Open a Lowrance SL3 recording and its ArduPilot BIN logs. Match sonar to GPS, browse scans along the route and explore recorded depths in 3D. Choose Lake / pond for depth surveys or Canal for sidescan reconstruction. Everything runs in your browser; files are never uploaded.</p>
     </section>
 
     <div class="workbench">
@@ -146,8 +146,9 @@
 
     <section class="card seabed-card" aria-labelledby="seabed-title">
       <header class="card-head">
-        <div class="card-title"><h2 id="seabed-title">3D canal model</h2><span id="seabed-summary" class="card-hint">Bed, banks, objects and shadows from sonar and GPS</span></div>
+        <div class="card-title"><h2 id="seabed-title">3D depth survey</h2><span id="seabed-summary" class="card-hint">Recorded depth, nearby estimates and survey coverage</span></div>
         <div class="build-controls">
+          <label class="select-field"><span>Water body</span><select id="survey-mode"><option value="lake" selected>Lake / pond</option><option value="canal">Canal</option></select></label>
           <label class="select-field"><span>Stretch</span><select id="seabed-stretch" disabled><option value="100">100 m</option><option value="250" selected>250 m</option><option value="500">500 m</option><option value="all">Whole recording</option></select></label>
           <button type="button" id="build-seabed" class="btn btn-primary" disabled><svg class="icon" aria-hidden="true"><use href="#i-cube"/></svg><span id="build-seabed-label">Build 3D model</span></button>
         </div>
@@ -156,13 +157,15 @@
         <summary>Reconstruction settings</summary>
         <div class="settings-grid">
           <label class="slider"><span>Transducer depth</span><input id="seabed-draft" type="range" min="0" max="1" step="0.05" value="0.2"><output id="seabed-draft-value" for="seabed-draft">0.20 m</output></label>
-          <label class="slider"><span>Shadow sensitivity</span><input id="seabed-sensitivity" type="range" min="0" max="1" step="0.05" value="0.5"><output id="seabed-sensitivity-value" for="seabed-sensitivity">50%</output></label>
-          <label class="slider"><span>Bed detail from shading</span><input id="seabed-shading" type="range" min="0" max="1" step="0.05" value="0.8"><output id="seabed-shading-value" for="seabed-shading">80%</output></label>
+          <label class="slider" data-canal-setting hidden><span>Shadow sensitivity</span><input id="seabed-sensitivity" type="range" min="0" max="1" step="0.05" value="0.5"><output id="seabed-sensitivity-value" for="seabed-sensitivity">50%</output></label>
+          <label class="slider" data-canal-setting hidden><span>Bed detail from shading</span><input id="seabed-shading" type="range" min="0" max="1" step="0.05" value="0.8"><output id="seabed-shading-value" for="seabed-shading">80%</output></label>
+          <label class="slider" data-lake-setting><span>Interpolation radius</span><input id="lake-interpolation" type="range" min="0" max="5" step="0.5" value="2"><output id="lake-interpolation-value" for="lake-interpolation">2.0 m</output></label>
         </div>
-        <p class="settings-note">Transducer depth is how far below the water surface the sonar sits. Higher shadow sensitivity finds fainter objects, and more false ones. Bed detail from shading adds bumps and hollows read from echo brightness. Changes apply when you rebuild.</p>
+        <p id="seabed-settings-note" class="settings-note">Lake / pond uses recorded depth beneath the boat, grouped into 1 m cells. Only small gaps surrounded by nearby measured cells are interpolated. Set the radius to 0 for measured cells only. Transducer depth adds the distance from the water surface to the sonar. Changes apply when you rebuild.</p>
       </details>
       <p id="seabed-status" class="status" data-state="idle" aria-live="polite">Match the sonar and GPS files, then build the model.</p>
-      <div id="seabed-view" class="seabed-view"><div class="seabed-empty" id="seabed-empty"><svg class="icon" aria-hidden="true"><use href="#i-cube"/></svg><p>Build the model to explore the canal in 3D: bed, bank slopes, objects and their sonar shadows</p></div></div>
+      <p id="survey-guide" class="guide survey-guide">Lake / pond: white dots show measured depth cells. Surfaces between them are local estimates. Empty space is unsurveyed; the shape does not represent the whole lake.</p>
+      <div id="seabed-view" class="seabed-view"><div class="seabed-empty" id="seabed-empty"><svg class="icon" aria-hidden="true"><use href="#i-cube"/></svg><p>Build a depth survey from the sonar and GPS files</p></div></div>
       <div id="seabed-legend" class="seabed-legend" aria-label="Colour key"></div>
       <div class="seabed-tools">
         <div class="segmented" role="radiogroup" aria-label="Colour the model by"><label><input type="radio" name="seabed-colour" value="sonar" checked disabled><span>Sonar</span></label><label><input type="radio" name="seabed-colour" value="depth" disabled><span>Depth</span></label><label><input type="radio" name="seabed-colour" value="relief" disabled><span>Relief</span></label><label><input type="radio" name="seabed-colour" value="source" disabled><span>Source</span></label></div>
@@ -170,6 +173,7 @@
         <label class="slider"><span>Vertical exaggeration</span><input id="seabed-exaggeration" type="range" min="1" max="20" step="0.5" value="3" disabled><output id="seabed-exaggeration-value" for="seabed-exaggeration">3×</output></label>
         <span class="tool-spacer"></span>
         <button type="button" id="seabed-reset" class="btn btn-secondary btn-sm" disabled><svg class="icon" aria-hidden="true"><use href="#i-reset"/></svg>Reset view</button>
+        <button type="button" id="seabed-top" class="btn btn-secondary btn-sm" disabled>Top view</button>
         <button type="button" id="seabed-save" class="btn btn-secondary btn-sm" disabled><svg class="icon" aria-hidden="true"><use href="#i-image"/></svg>Save PNG</button>
       </div>
       <div class="seabed-detail">
@@ -179,10 +183,11 @@
         </section>
         <section class="objects-panel" aria-labelledby="objects-title">
           <div class="panel-head"><h3 id="objects-title">Detected objects</h3><span id="objects-caption" class="card-hint">From their sonar shadows</span></div>
-          <div class="table-wrap"><table id="objects-table" class="objects-table"><thead><tr><th scope="col">#</th><th scope="col">Type</th><th scope="col">Height</th><th scope="col">Size</th><th scope="col">Position</th><th scope="col">Along</th></tr></thead><tbody></tbody></table><p id="objects-empty" class="objects-empty">No objects detected in this stretch.</p></div>
+          <dl id="lake-quality" class="lake-quality" hidden></dl>
+          <div class="table-wrap" id="canal-objects"><table id="objects-table" class="objects-table"><thead><tr><th scope="col">#</th><th scope="col">Type</th><th scope="col">Height</th><th scope="col">Size</th><th scope="col">Position</th><th scope="col">Along</th></tr></thead><tbody></tbody></table><p id="objects-empty" class="objects-empty">No objects detected in this stretch.</p></div>
         </section>
       </div>
-      <p class="guide">Drag to rotate, scroll or pinch to zoom, and right-drag or use two fingers to pan. Click a numbered point, an object or a crack label to show its scan and cross-section. After crack screening, the screened stretch is shown at full detail in Sonar colours, outlined, with each line it found framed on the bed. The model covers the chosen stretch of route, centred on the selected point. Depth under the boat is measured by the primary sonar. The bed on either side, the bank slopes and the object heights are reconstructed from the sidescan: banks from where the echoes end (the waterline) and where they change character (the toe), objects from the length of their shadows, and bumps and hollows from echo brightness. Treat them as estimates. Not for navigation.</p>
+      <p id="seabed-guide" class="guide">Drag to rotate, scroll or pinch to zoom, and right-drag or use two fingers to pan. Top view shows the footprint of the survey. Click a numbered point to view its scan and measured depth profile. Lake / pond does not infer objects, shorelines or heights from echo brightness. Depth includes the transducer offset you set. GPS accuracy, bottom tracking and survey coverage limit the result. Not for navigation.</p>
     </section>
 
     <section class="card crack-card" aria-labelledby="crack-title">

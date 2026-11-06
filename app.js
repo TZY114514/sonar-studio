@@ -1,9 +1,10 @@
-import {FileWindow,scanSl3,scanBin,combineFixes,findAlignment,matchedGpsForFrame,nearestSample,exportAligned,recordingSummary,trackGeoJson,trackGpx} from './engine.js?v=504b5cb6fd';
-import {buildSeabedModel,seabedDepthAt,seabedBaseAt} from './reconstruct.js?v=504b5cb6fd';
-import {inspectLining,candidatesGeoJson} from './inspect.js?v=504b5cb6fd';
-import {createInspectView,CRACK_COLOURS} from './inspect-view.js?v=504b5cb6fd';
-import {createRouteMap} from './route-map.js?v=504b5cb6fd';
-import {renderScan} from './scan-image.js?v=504b5cb6fd';
+import {FileWindow,scanSl3,scanBin,combineFixes,findAlignment,matchedGpsForFrame,nearestSample,exportAligned,recordingSummary,trackGeoJson,trackGpx} from './engine.js?v=lake-20261106';
+import {buildSeabedModel,seabedDepthAt,seabedBaseAt} from './reconstruct.js?v=lake-20261106';
+import {buildLakeModel} from './bathymetry.js?v=lake-20261106';
+import {inspectLining,candidatesGeoJson} from './inspect.js?v=lake-20261106';
+import {createInspectView,CRACK_COLOURS} from './inspect-view.js?v=lake-20261106';
+import {createRouteMap} from './route-map.js?v=lake-20261106';
+import {renderScan} from './scan-image.js?v=lake-20261106';
 
 const $=id=>document.getElementById(id);
 const PREVIEW_SECONDS=30;
@@ -12,6 +13,7 @@ const count=value=>Number(value||0).toLocaleString('en-US');
 const durationText=seconds=>{const s=Math.max(0,Math.round(seconds));return `${Math.floor(s/3600)}h ${String(Math.floor(s%3600/60)).padStart(2,'0')}m ${String(s%60).padStart(2,'0')}s`;};
 const clockText=seconds=>{const s=Math.max(0,Math.round(seconds)),h=Math.floor(s/3600),m=Math.floor(s%3600/60),rest=String(s%60).padStart(2,'0');return h?`${h}:${String(m).padStart(2,'0')}:${rest}`:`${m}:${rest}`;};
 const CHANNEL_LABELS={5:'sidescan',2:'downscan'};
+const lakeMode=()=>$('survey-mode').value==='lake';
 const CHANNEL_GUIDES={5:'Bright bands show stronger echoes. The dark center band is directly beneath the boat. Colors are enhanced for display.',
   2:'Bright bands show stronger echoes. The top edge is the water surface and depth increases downward. Colors are enhanced for display.'};
 // Preview sidescan when the recording has it, otherwise downscan.
@@ -45,7 +47,8 @@ function ready(){
   $('gps-name').closest('.file-picker').toggleAttribute('data-loaded',state.bins.length>0);
   $('download-gpx').disabled=$('download-geojson').disabled=!(state.trackFixes.length>=2&&!state.aligning);
   $('build-seabed').disabled=$('seabed-stretch').disabled=!(state.sync?.trusted&&state.trackFixes.length>=2&&!state.aligning&&!state.busy&&!state.seabed.building);
-  $('find-cracks').disabled=$('crack-stretch').disabled=!(state.sync?.trusted&&state.trackFixes.length>=2&&!state.aligning&&!state.busy&&!state.cracks.running);
+  $('find-cracks').disabled=$('crack-stretch').disabled=lakeMode()||!(state.sync?.trusted&&state.trackFixes.length>=2&&!state.aligning&&!state.busy&&!state.cracks.running);
+  $('survey-mode').disabled=state.busy||state.seabed.building||state.cracks.running;
   $('sonar-input').disabled=state.busy||state.aligning;$('gps-input').disabled=state.busy||state.aligning;
   $('entire-file').disabled=state.busy;
   $('use-preview-window').disabled=state.busy||!state.selection;
@@ -56,7 +59,7 @@ function ready(){
 }
 
 function details(summary){
-  const rows=[['Duration',durationText(summary.duration).replace(/^0h /,'')],['Typical depth',summary.medianDepth==null?'Unavailable':`${summary.medianDepth.toFixed(2)} m`],['Primary pings',count(summary.counts.primary)],['Downscan pings',count(summary.counts.downscan)],['Sidescan pings',count(summary.counts.sidescan)]];
+  const rows=[['Duration',durationText(summary.duration).replace(/^0h /,'')],['Typical depth',summary.medianDepth==null?'Unavailable':`${summary.medianDepth.toFixed(2)} m`],['Depth available',`${Math.round(summary.depthCoverage*100)}% of primary pings`],['Sidescan range',summary.sidescanRangeM==null?'Unavailable':`${summary.sidescanRangeM.toFixed(2)} m per side`],['Primary pings',count(summary.counts.primary)],['Downscan pings',count(summary.counts.downscan)],['Sidescan pings',count(summary.counts.sidescan)]];
   const list=$('recording-details');list.replaceChildren();list.hidden=false;
   for(const [label,value] of rows){const item=document.createElement('div'),dt=document.createElement('dt'),dd=document.createElement('dd');dt.textContent=label;dd.textContent=value;item.append(dt,dd);list.append(item);}
 }
@@ -251,15 +254,16 @@ function saveRoute(format){
 const seabedColour=()=>document.querySelector('input[name="seabed-colour"]:checked')?.value??'sonar';
 function seabedTools(enabled){
   const model=state.seabed.model;
-  for(const id of ['seabed-exaggeration','seabed-reset','seabed-save','seabed-contours','seabed-objects'])$(id).disabled=!enabled;
+  for(const id of ['seabed-exaggeration','seabed-reset','seabed-top','seabed-save','seabed-contours'])$(id).disabled=!enabled;
+  $('seabed-objects').disabled=!enabled||model?.mode==='lake';
   $('seabed-shadows').disabled=!enabled||!model?.mosaic;
-  $('seabed-cracks').disabled=!enabled||!state.cracks.result;
-  document.querySelectorAll('input[name="seabed-colour"]').forEach(input=>{input.disabled=!enabled||input.value==='sonar'&&!model?.mosaic;});
+  $('seabed-cracks').disabled=!enabled||!state.cracks.result||model?.mode==='lake';
+  document.querySelectorAll('input[name="seabed-colour"]').forEach(input=>{input.disabled=!enabled||input.value==='sonar'&&!model?.mosaic||input.value==='relief'&&model?.mode==='lake';});
 }
 function resetSeabed(message){
   const seabed=state.seabed;seabed.version++;seabed.building=false;seabed.model=null;seabed.selectedObject=-1;
   seabed.viewer?.clear();$('seabed-empty').hidden=false;seabedStatus(message);
-  $('seabed-summary').textContent='Bed, banks, objects and shadows from sonar and GPS';$('build-seabed-label').textContent='Build 3D model';
+  $('seabed-summary').textContent=lakeMode()?'Recorded depth, nearby estimates and survey coverage':'Bed, banks, objects and shadows from sonar and GPS';$('build-seabed-label').textContent='Build 3D model';
   $('seabed-legend').replaceChildren();$('objects-table').tBodies[0].replaceChildren();$('section-chart').replaceChildren();
   seabedTools(false);
 }
@@ -290,23 +294,30 @@ function defaultExaggeration(model){
 // centre: a recording time to centre the stretch on, instead of the selected point.
 async function buildSeabed({centre=null}={}){
   const seabed=state.seabed,version=++seabed.version,{sonar,frames,gps,sync,scanPoints,summary}=state;
-  const stretch=stretchRange($('seabed-stretch').value,centre),settings={draftM:Number($('seabed-draft').value),sensitivity:Number($('seabed-sensitivity').value),shading:Number($('seabed-shading').value)};
+  const lake=lakeMode(),stretch=stretchRange($('seabed-stretch').value,centre),settings={draftM:Number($('seabed-draft').value),sensitivity:Number($('seabed-sensitivity').value),shading:Number($('seabed-shading').value),interpolationM:Number($('lake-interpolation').value)};
   seabed.building=true;ready();seabedTools(false);
   try{
     seabedStatus('Loading the 3D viewer…','working');
-    const module=await import('./seabed-3d.js?v=504b5cb6fd');
+    const module=await import('./seabed-3d.js?v=lake-20261106');
     const timeRange=stretch&&[stretch.start+summary.start,stretch.end+summary.start];
-    const model=await buildSeabedModel(sonar,frames,gps,sync,{scans:scanPoints,timeRange,...settings,progress:fraction=>{if(version===seabed.version)seabedStatus(`Reconstructing the canal from sonar and GPS · ${Math.round(fraction*100)}%`,'working');}});
+    const model=await (lake?buildLakeModel:buildSeabedModel)(sonar,frames,gps,sync,{scans:scanPoints,timeRange,...settings,progress:fraction=>{if(version===seabed.version)seabedStatus(`${lake?'Mapping recorded depths':'Reconstructing the canal'} · ${Math.round(fraction*100)}%`,'working');}});
     if(version!==seabed.version)return;
     try{seabed.viewer??=module.createSeabedViewer($('seabed-view'),{onSelectScan:index=>{selectScan(index);seabedStatus(`Scan ${index+1} is shown in the Sonar scan panel and the cross-section.`,'ok');},onSelectObject:selectObject,onSelectCrack:selectCrack});}
     catch(error){throw /webgl/i.test(error.message)?new Error('this browser has WebGL turned off'):error;}
     seabed.module=module;seabed.model=model;seabed.selectedObject=-1;
-    const exaggeration=defaultExaggeration(model);
+    const exaggeration=lake?1:defaultExaggeration(model);
     $('seabed-exaggeration').value=String(exaggeration);$('seabed-exaggeration-value').textContent=`${exaggeration}×`;
-    if(seabedColour()==='sonar'&&!model.mosaic)document.querySelector('input[name="seabed-colour"][value="depth"]').checked=true;
+    if(lake||seabedColour()==='sonar'&&!model.mosaic)document.querySelector('input[name="seabed-colour"][value="depth"]').checked=true;
     $('seabed-empty').hidden=true;
     seabed.viewer.show(model,{exaggeration,colour:seabedColour(),overlays:{contours:$('seabed-contours').checked,shadows:$('seabed-shadows').checked&&Boolean(model.mosaic),objects:$('seabed-objects').checked,cracks:$('seabed-cracks').checked}});
     seabed.viewer.select(state.selection?.kind==='scan'?state.selection.index:-1);
+    if(lake){
+      const c=model.coverage;
+      $('seabed-summary').textContent=`${count(model.soundings)} depth readings · ${count(c.measuredCells)} measured cells · ${model.minDepth.toFixed(1)}–${model.maxDepth.toFixed(1)} m deep`;
+      seabedStatus(`Lake / pond depth survey built. White dots = measured cells; ${count(c.estimatedCells)} nearby cells interpolated. Empty space has no data. Sidescan brightness is not used as height.`,'ok');
+      $('build-seabed-label').textContent='Rebuild 3D model';
+      seabed.viewer.setCracks(null,[]);drawLegend();drawObjects();updateSection();seabedTools(true);return true;
+    }
     const length=model.sections.at(-1).along-model.sections[0].along,[port,starboard]=model.banks;
     $('seabed-summary').textContent=`${Math.round(length)} m of ${port||starboard?'canal':'survey'} · water up to ${model.maxDepth.toFixed(1)} m deep · ${model.objects.length} object${model.objects.length===1?'':'s'}`;
     const banks=port&&starboard?`banks found on both sides, waterline ${port.waterline.toFixed(1)} m to port and ${starboard.waterline.toFixed(1)} m to starboard`:port||starboard?`bank found to ${port?'port':'starboard'} only`:'no banks within sonar range';
@@ -334,7 +345,7 @@ function drawLegend(){
   }
   for(const item of legend.items)key(swatch(item.color),item.label);
   const {OVERLAY_COLOURS:colours}=module;
-  if($('seabed-contours').checked){key(chip('#ffffff','line'),`Contour every ${module.contourInterval(model)} m`);key(chip(colours.waterline,'line'),'Waterline');}
+  if($('seabed-contours').checked){key(chip('#ffffff','line'),`Contour every ${module.contourInterval(model)} m`);if(model.mode!=='lake')key(chip(colours.waterline,'line'),'Waterline');}
   if($('seabed-shadows').checked&&model.mosaic)key(chip(colours.shadow,'fill'),'Acoustic shadow');
   if($('seabed-objects').checked&&model.objects.length)key(chip(colours.marker,'label'),'Object, with height');
   if($('seabed-cracks').checked&&state.cracks.result){
@@ -346,6 +357,15 @@ function drawLegend(){
 
 // Detected objects, one row each; a row selects the object in 3D, the scan preview and the cross-section.
 function drawObjects(){
+  const model=state.seabed.model,lake=model?.mode==='lake';
+  $('lake-quality').hidden=!lake;$('canal-objects').hidden=lake;
+  $('objects-title').textContent=lake?'Survey coverage':'Detected objects';
+  if(lake){
+    const c=model.coverage,list=$('lake-quality');list.replaceChildren();
+    const rows=[['Accepted depth readings',count(model.soundings)],['Measured grid cells',count(c.measuredCells)],['Interpolated cells',count(c.estimatedCells)],['Cell size',`${model.cell.toFixed(1)} m`],['Interpolation radius',`${model.interpolationM.toFixed(1)} m`],['Transducer offset added',`${model.draftM.toFixed(2)} m`],['Depth range',`${model.minDepth.toFixed(2)}–${model.maxDepth.toFixed(2)} m`],['Object detection','Not inferred from depth']];
+    for(const [label,value] of rows){const dt=document.createElement('dt'),dd=document.createElement('dd');dt.textContent=label;dd.textContent=value;list.append(dt,dd);}
+    $('objects-caption').textContent='Unsampled areas stay empty';return;
+  }
   const body=$('objects-table').tBodies[0],objects=state.seabed.model?.objects??[];body.replaceChildren();
   for(const [index,object] of objects.entries()){
     const row=body.insertRow();row.tabIndex=0;row.dataset.index=String(index);row.setAttribute('aria-selected',String(index===state.seabed.selectedObject));
@@ -376,6 +396,8 @@ function niceStep(range,target){const raw=range/target,power=10**Math.floor(Math
 function updateSection(){
   const chart=$('section-chart'),{model,viewer}=state.seabed;chart.replaceChildren();
   if(!model)return;
+  $('section-title').textContent=model.mode==='lake'?'Recorded depth over time':'Cross-section';
+  if(model.mode==='lake'){viewer?.setSection(null);drawLakeProfile(chart,model);return;}
   const time=state.selection?state.selection.time+state.summary.start:null,sections=model.sections;
   const inside=time!=null&&time>=sections[0].time-5&&time<=sections.at(-1).time+5;
   if(!inside){
@@ -464,6 +486,30 @@ function drawSectionChart(chart,{points,section,objects,port,starboard,width}){
   chart.append(root,tip,legend);
   const label=state.selection?.kind==='scan'?`Scan ${state.selection.index+1}`:state.selection?.object!=null?`Object ${state.seabed.model.objects[state.selection.object].id}`:'Route point';
   $('section-caption').textContent=`${label}${width?` · ${width.toFixed(1)} m wide at the waterline`:''} · depth drawn ${verticalScale>=1.5?`${verticalScale.toFixed(0)}× exaggerated`:'to scale'}`;
+}
+
+function drawLakeProfile(chart,model){
+  const points=model.profile,W=Math.round(Math.max(300,Math.min(720,chart.clientWidth||560))),H=235,m={l:42,r:14,t:28,b:32},iw=W-m.l-m.r,ih=H-m.t-m.b;
+  const start=points[0].time,end=points.at(-1).time,low=Math.max(0,model.minDepth-.15),high=model.maxDepth+.15;
+  const X=t=>m.l+(t-start)/Math.max(1,end-start)*iw,Y=d=>m.t+(d-low)/Math.max(.1,high-low)*ih;
+  const root=svg('svg',{viewBox:`0 0 ${W} ${H}`,role:'img',tabindex:0,'aria-label':'Recorded under-boat depth over time. Depth increases downward. Use arrow keys to read samples; Enter selects its sonar scan.'}),grid=svg('g',{class:'grid'},root),axis=svg('g',{class:'axis'},root);
+  for(let i=0;i<=4;i++){
+    const depth=low+(high-low)*i/4,y=Y(depth);svg('line',{x1:m.l,x2:W-m.r,y1:y,y2:y},grid);svg('text',{x:m.l-7,y:y+4,'text-anchor':'end'},axis).textContent=depth.toFixed(1);
+  }
+  const ticks=W<460?3:5;
+  for(let i=0;i<ticks;i++){const t=start+(end-start)*i/(ticks-1);svg('text',{x:X(t),y:H-10,'text-anchor':'middle'},axis).textContent=clockText(t-state.summary.start);}
+  svg('text',{class:'annotation',x:m.l,y:15},root).textContent='Depth (m) ↓';
+  for(const p of points)svg('circle',{cx:X(p.time),cy:Y(p.depth),r:1.45,fill:'var(--chart-bed)'},root);
+  const cursor=svg('line',{y1:m.t,y2:H-m.b,stroke:'var(--chart-measured)','stroke-dasharray':'3 3'},root),marker=svg('circle',{r:4.5,fill:'var(--chart-measured)',stroke:'var(--surface)', 'stroke-width':1.5},root);
+  const readout=document.createElement('p');readout.className='guide';readout.setAttribute('aria-live','polite');
+  const wanted=state.selection?state.selection.time+state.summary.start:start;
+  let current=0;points.forEach((p,i)=>{if(Math.abs(p.time-wanted)<Math.abs(points[current].time-wanted))current=i;});
+  const show=index=>{current=Math.max(0,Math.min(points.length-1,index));const p=points[current],x=X(p.time);cursor.setAttribute('x1',x);cursor.setAttribute('x2',x);marker.setAttribute('cx',x);marker.setAttribute('cy',Y(p.depth));readout.textContent=`${clockText(p.time-state.summary.start)} · ${p.depth.toFixed(2)} m recorded depth + offset`;};
+  const indexAt=event=>{const rect=root.getBoundingClientRect(),t=start+((event.clientX-rect.left)/rect.width*W-m.l)/iw*(end-start);let k=0;points.forEach((p,i)=>{if(Math.abs(p.time-t)<Math.abs(points[k].time-t))k=i;});return k;};
+  const choose=()=>{const p=points[current];select({kind:'point',time:p.time-state.summary.start,lon:model.origin.lon+p.x/(111320*Math.cos(model.origin.lat*Math.PI/180)),lat:model.origin.lat+p.y/111320});};
+  root.addEventListener('pointermove',event=>show(indexAt(event)));root.addEventListener('click',event=>{show(indexAt(event));choose();});
+  root.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();choose();return;}const d={ArrowLeft:-1,ArrowRight:1,Home:-points.length,End:points.length}[event.key];if(d!=null){event.preventDefault();show(current+d);}});
+  show(current);chart.append(root,readout);$('section-caption').textContent='Dots are measurements; time from recording start';
 }
 
 // ---- Crack screening ----
@@ -636,10 +682,11 @@ for(const id of ['preview-contrast','preview-brightness'])$(id).addEventListener
 $('save-image').addEventListener('click',saveImage);
 $('download-gpx').addEventListener('click',()=>saveRoute('gpx'));
 $('build-seabed').addEventListener('click',()=>buildSeabed());
+$('survey-mode').addEventListener('change',()=>setSurveyMode());
 $('seabed-exaggeration').addEventListener('input',event=>{const value=Number(event.target.value);$('seabed-exaggeration-value').textContent=`${value}×`;state.seabed.viewer?.setExaggeration(value);});
 document.querySelectorAll('input[name="seabed-colour"]').forEach(input=>input.addEventListener('change',()=>{state.seabed.viewer?.setColour(input.value);drawLegend();}));
 for(const [id,name] of [['seabed-contours','contours'],['seabed-shadows','shadows'],['seabed-objects','objects'],['seabed-cracks','cracks']])$(id).addEventListener('change',event=>{state.seabed.viewer?.setOverlay(name,event.target.checked);drawLegend();});
-for(const [id,format] of [['seabed-draft',v=>`${v.toFixed(2)} m`],['seabed-sensitivity',v=>`${Math.round(v*100)}%`],['seabed-shading',v=>`${Math.round(v*100)}%`]]){
+for(const [id,format] of [['seabed-draft',v=>`${v.toFixed(2)} m`],['seabed-sensitivity',v=>`${Math.round(v*100)}%`],['seabed-shading',v=>`${Math.round(v*100)}%`],['lake-interpolation',v=>`${v.toFixed(1)} m`]]){
   $(id).addEventListener('input',event=>{$(`${id}-value`).textContent=format(Number(event.target.value));if(state.seabed.model)seabedStatus('Settings changed · rebuild the model to apply them.','warn');});
 }
 // Redraw the cross-section when its panel changes width.
@@ -662,6 +709,26 @@ $('objects-table').addEventListener('keydown',event=>{const row=event.target.clo
   if(event.key==='Enter'||event.key===' '){event.preventDefault();selectObject(Number(row.dataset.index));}
   else if(event.key==='ArrowDown'||event.key==='ArrowUp'){event.preventDefault();(event.key==='ArrowDown'?row.nextElementSibling:row.previousElementSibling)?.focus();}});
 $('seabed-reset').addEventListener('click',()=>state.seabed.viewer?.resetView());
+$('seabed-top').addEventListener('click',()=>state.seabed.viewer?.topView());
 $('seabed-save').addEventListener('click',async()=>{const blob=await state.seabed.viewer?.toBlob();if(blob)saveBlob(blob,`${fileStem()}_seabed_3d.png`);});
 $('download-geojson').addEventListener('click',()=>saveRoute('geojson'));
 window.addEventListener('beforeunload',()=>state.urls.forEach(url=>URL.revokeObjectURL(url)));
+
+function setSurveyMode(){
+  const lake=lakeMode();
+  $('seabed-stretch').value=lake?'all':'250';
+  for(const id of ['seabed-shadows','seabed-objects','seabed-cracks'])$(id).closest('label').hidden=lake;
+  for(const value of ['sonar','relief'])document.querySelector(`input[name="seabed-colour"][value="${value}"]`).closest('label').hidden=lake;
+  document.querySelectorAll('[data-canal-setting]').forEach(element=>element.hidden=lake);
+  document.querySelectorAll('[data-lake-setting]').forEach(element=>element.hidden=!lake);
+  $('seabed-settings-note').textContent=lake?'Recorded under-boat depths are grouped into 1 m cells (coarser for very large areas). Only gaps surrounded by measured cells within the interpolation radius are estimated; 0 leaves measured cells only. Transducer depth adds the distance from the surface to the sonar. Changes apply when rebuilt.':'Transducer depth is the distance from the surface to the sonar. Shadow sensitivity and bed detail from shading affect sidescan estimates. Brightness-derived relief, banks and objects are estimates. Changes apply when rebuilt.';
+  $('survey-guide').textContent=lake?'Lake / pond: white dots show measured depth cells. Surfaces between them are local estimates. Empty space is unsurveyed; the shape does not represent the whole lake. Cell size is a display setting, not GPS accuracy.':'Canal: a sidescan-based estimate of the bed, bank slopes and objects. Requires steady motion to infer the scan direction; echo brightness can also reflect bottom material.';
+  $('seabed-guide').textContent=lake?'Drag to rotate, scroll or pinch to zoom, and right-drag or use two fingers to pan. Top view shows the survey footprint. Click a numbered point to view its scan and recorded depth profile. No objects, shorelines or heights are inferred from echo brightness. GPS accuracy, bottom tracking and survey coverage limit the result. Not for navigation.':'Drag to rotate and zoom; click a numbered point or object to show its scan and cross-section. Depth beneath the boat is measured; bed relief, bank slopes and object heights are sidescan-based estimates. Dark areas can be soft material, shadows or missing returns. Not for navigation.';
+  document.querySelector(`input[name="seabed-colour"][value="${lake?'depth':'sonar'}"]`).checked=true;
+  resetSeabed('Match the sonar and GPS files, then build the model.');
+  resetCracks(lake?'Crack screening applies to canal lining. Choose Canal only when surveying a lined channel.':'Match files and select a route point to screen the canal lining.');
+  try{localStorage.setItem('sonar-studio-survey-mode',lake?'lake':'canal');const url=new URL(location.href);url.searchParams.set('survey',lake?'lake':'canal');history.replaceState(null,'',url);}catch{}
+  ready();
+}
+try{const choice=new URL(location.href).searchParams.get('survey')??localStorage.getItem('sonar-studio-survey-mode');if(choice==='canal'||choice==='lake')$('survey-mode').value=choice;}catch{}
+setSurveyMode();

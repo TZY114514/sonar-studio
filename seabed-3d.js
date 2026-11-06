@@ -2,8 +2,8 @@
 // Axes: three.js x = east, y = up (depth is negative), z = south.
 import * as THREE from 'three';
 import {OrbitControls} from './vendor/three/OrbitControls.js';
-import {color} from './scan-image.js?v=504b5cb6fd';
-import {seabedDepthAt,gridToLocal,SOURCE} from './reconstruct.js?v=504b5cb6fd';
+import {color} from './scan-image.js?v=lake-20261106';
+import {seabedDepthAt,gridToLocal,SOURCE} from './reconstruct.js?v=lake-20261106';
 
 // Colours. Depth is one blue ramp (shallow light, deep dark); relief diverges from a neutral grey,
 // warm for raised and cool for lower than the canal's smooth shape; sources are three categories,
@@ -40,6 +40,11 @@ export function contourInterval(model){
 
 // What each colour means, for the page's legend.
 export function legendFor(mode,model){
+  if(model.mode==='lake'){
+    const items=[{color:'#ffffff',label:'Dots: measured depth cells'},{color:'#0d1d2c',label:'Empty: no survey data'}];
+    if(mode==='source')return {items:[{color:'#3987e5',label:'Recorded depth cell'},{color:'#d95926',label:'Interpolated nearby depths'},...items]};
+    return {gradient:DEPTH_RAMP,from:`${model.minDepth.toFixed(1)} m`,to:`${model.maxDepth.toFixed(1)} m deep`,items};
+  }
   const land={color:LAND,label:'Dry bank'};
   if(mode==='depth')return {gradient:DEPTH_RAMP,from:`${model.minDepth.toFixed(1)} m`,to:`${model.maxDepth.toFixed(1)} m deep`,items:[land]};
   if(mode==='relief'){const r=reliefRange(model);return {gradient:RELIEF_RAMP,from:`${(r*100).toFixed(0)} cm lower`,to:`${(r*100).toFixed(0)} cm higher`,note:'than the canal’s smooth shape',items:[land]};}
@@ -98,6 +103,7 @@ function seabedGeometry(model){
   const colours={depth:new Float32Array(count*3),relief:new Float32Array(count*3),source:new Float32Array(count*3),sonar:new Float32Array(count*3).fill(1)};
   const land=linear(rgb(LAND)),sourceColour=new Map(),range=reliefRange(model),span=Math.max(.01,model.maxDepth-model.minDepth);
   for(const s of SOURCES)for(const code of s.codes)sourceColour.set(code,linear(rgb(s.color)));
+  sourceColour.set(SOURCE.interpolated,linear(rgb('#d95926')));
   const mosaic=model.mosaic,tw=mosaic?.width??1,th=mosaic?.height??1,texel=mosaic?.texel??cell;
   for(let j=0;j<ny;j++)for(let i=0;i<nx;i++){
     const k=j*nx+i,d=depth[k],valid=!Number.isNaN(d),[x,y]=gridToLocal(model,minU+i*cell,minV+j*cell);
@@ -205,7 +211,7 @@ export function createSeabedViewer(container,{onSelectScan,onSelectObject=()=>{}
 
   function placeMarkers(){
     for(const marker of markers){
-      const floor=-marker.scan.depth*exaggeration;
+      const floor=Number.isFinite(marker.scan.depth)?-marker.scan.depth*exaggeration:0;
       marker.dot.position.y=floor;
       marker.plumb.geometry.setFromPoints([new THREE.Vector3(marker.scan.x,0,-marker.scan.y),new THREE.Vector3(marker.scan.x,floor,-marker.scan.y)]);
       marker.plumb.computeLineDistances();
@@ -229,7 +235,7 @@ export function createSeabedViewer(container,{onSelectScan,onSelectObject=()=>{}
     const vertical=THREE.MathUtils.degToRad(camera.fov),horizontal=2*Math.atan(Math.tan(vertical/2)*camera.aspect);
     const {along,across}=axes();let direction,distance;
     const long=Math.max(width,height),short=Math.min(width,height);
-    if(long>3*short){
+    if(long>3*short&&model.mode!=='lake'){
       // A long stretch of canal: look along it from low over one end, so the near part shows the canal's
       // shape and relief and the rest recedes into the distance. The grid's long side may be either axis.
       const alongU=width>=height,[nx,ny]=alongU?gridToLocal(model,model.minU+.3*width,(model.minV+model.maxV)/2):gridToLocal(model,(model.minU+model.maxU)/2,model.minV+.3*height);
@@ -255,20 +261,27 @@ export function createSeabedViewer(container,{onSelectScan,onSelectObject=()=>{}
   }
 
   function show(next,{exaggeration:scale=3,colour='sonar',overlays={}}={}){
-    dispose();model=next;exaggeration=scale;Object.assign(shown,overlays);
+    dispose();model=next;exaggeration=scale;mode=colour;Object.assign(shown,overlays);
     content=new THREE.Group();vertical=new THREE.Group();vertical.scale.y=exaggeration;content.add(vertical);
     const extent=Math.max(model.maxU-model.minU,model.maxV-model.minV),dotRadius=Math.max(.12,Math.min(extent*.004,1.2));
     const built=seabedGeometry(model);colours=built.colours;
     // Pushed back a little so contour lines and the shadow overlay draw on top of it.
     const surface={roughness:.88,metalness:0,side:THREE.DoubleSide,polygonOffset:true,polygonOffsetFactor:1,polygonOffsetUnits:1};
-    materials={colour:new THREE.MeshStandardMaterial({vertexColors:true,...surface}),
+    materials={colour:model.mode==='lake'?new THREE.MeshBasicMaterial({vertexColors:true,side:THREE.DoubleSide,polygonOffset:true,polygonOffsetFactor:1,polygonOffsetUnits:1}):new THREE.MeshStandardMaterial({vertexColors:true,...surface}),
       sonar:model.mosaic?new THREE.MeshStandardMaterial({map:sonarTexture(model),...surface}):null};
     seabed=new THREE.Mesh(built.geometry,materials.colour);vertical.add(seabed);
     overlay=model.mosaic?new THREE.Mesh(built.geometry,new THREE.MeshBasicMaterial({map:shadowTexture(model.mosaic),transparent:true,depthWrite:false,side:THREE.DoubleSide})):null;
     if(overlay){overlay.renderOrder=2;vertical.add(overlay);}
     contours=contourLines(model,contourInterval(model));vertical.add(contours);
+    if(model.mode==='lake'){
+      const pointGeometry=new THREE.BufferGeometry();
+      pointGeometry.setAttribute('position',new THREE.Float32BufferAttribute(model.points.flatMap(p=>[p.x,-p.depth+.015,-p.y]),3));
+      const measuredPoints=new THREE.Points(pointGeometry,new THREE.PointsMaterial({color:0xffffff,size:4,sizeAttenuation:false}));
+      vertical.add(measuredPoints);
+    }
 
     // Route: at the water surface, and draped just above the seabed.
+    if(model.route.length>=2){
     content.add(line(model.route.map(([x,y])=>new THREE.Vector3(x,0,-y)),new THREE.LineBasicMaterial({color:0x3fe0d0})));
     const draped=[];
     for(const [x,y] of model.route){const d=seabedDepthAt(model,x,y);if(!Number.isNaN(d))draped.push(new THREE.Vector3(x,-d+.02,-y));}
@@ -276,6 +289,7 @@ export function createSeabedViewer(container,{onSelectScan,onSelectObject=()=>{}
     for(const [[x,y],hex] of [[model.route[0],0x1aa982],[model.route.at(-1),0xe45b4f]]){
       const end=new THREE.Mesh(new THREE.SphereGeometry(dotRadius*1.2,16,12),new THREE.MeshBasicMaterial({color:hex}));
       end.position.set(x,0,-y);content.add(end);
+    }
     }
 
     // Scan points: a numbered label on the surface, a plumb line, and a dot on the seabed.
@@ -376,6 +390,12 @@ export function createSeabedViewer(container,{onSelectScan,onSelectObject=()=>{}
     vertical.add(section);
   }
   function setSection(s){drawSection(s);render();}
+  function topView(){
+    if(!model)return;
+    const [x,y]=centre(),extent=Math.max(model.maxU-model.minU,model.maxV-model.minV),target=toScene(x,y,(model.minDepth+model.maxDepth)/2*exaggeration);
+    const distance=extent/(2*Math.tan(THREE.MathUtils.degToRad(camera.fov)/2))*1.25/Math.min(1,camera.aspect);
+    cancelAnimationFrame(flight);moved=true;controls.target.copy(target);camera.position.copy(target).add(new THREE.Vector3(0,distance,.001));controls.update();render();
+  }
   // A flat band of the given width laid on the seabed from (x0,y0) to (x1,y1), or null where there is no bed.
   function band(x0,y0,x1,y1,width,color,opacity){
     const length=Math.hypot(x1-x0,y1-y0);if(!(length>0))return null;
@@ -531,10 +551,10 @@ export function createSeabedViewer(container,{onSelectScan,onSelectObject=()=>{}
   const crackScreenPosition=index=>{const marker=crackMarkers.find(m=>m.index===index);if(!marker)return null;const p=project(marker.label);return {x:p.x,y:p.y-6};};
   const toBlob=()=>new Promise(resolve=>{render();renderer.domElement.toBlob(resolve,'image/png');});
   function clear(){dispose();model=null;render();}
-  const state=()=>({mode:seabed?.material===materials?.sonar?'sonar':mode,overlays:{...shown},objects:objectMarkers.length,exaggeration,selectedObject,
+  const state=()=>({mode:seabed?.material===materials?.sonar?'sonar':mode,surveyMode:model?.mode??'canal',coverage:model?.coverage,soundings:model?.soundings,overlays:{...shown},objects:objectMarkers.length,exaggeration,selectedObject,
     cracks:{lines:crackLines?.children.length?cracks.lines.length:0,labels:crackMarkers.length,picture:Boolean(crackPatch?.visible&&crackArea?.visible),outline:Boolean(crackArea?.children.some(child=>child.isLine))}});
 
-  const api={show,clear,setExaggeration,setColour,setOverlay,select,selectObject,focusObject,setSection,setCracks,setCrackLines,covers,focusLine,focusCrackArea,resetView,screenPosition,objectScreenPosition,crackScreenPosition,toBlob,state};
+  const api={show,clear,setExaggeration,setColour,setOverlay,select,selectObject,focusObject,setSection,setCracks,setCrackLines,covers,focusLine,focusCrackArea,resetView,topView,screenPosition,objectScreenPosition,crackScreenPosition,toBlob,state};
   container.seabedViewer=api;   // reachable from the page for tests and debugging
   return api;
 }

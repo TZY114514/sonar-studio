@@ -282,11 +282,12 @@ export async function exportAligned(file,allFrames,gps,sync,settings,progress=()
 function recordingStart(frames){let first=Infinity;for(const f of frames)if(f.timeMs<first)first=f.timeMs;return first/1000;}
 
 export function recordingSummary(frames){
-  const counts={primary:0,downscan:0,sidescan:0},depth=[],route=[];
+  const counts={primary:0,downscan:0,sidescan:0},depth=[],route=[],sideRanges=[];let validDepthCount=0;
   let first=Infinity,last=-Infinity;
   for(const f of frames){if(CHANNEL_NAMES[f.channel])counts[CHANNEL_NAMES[f.channel]]++;
     const t=f.timeMs/1000;if(t<first)first=t;if(t>last)last=t;
-    if(f.channel===0){if(f.depthM>0&&f.depthM<20)depth.push(f.depthM);if(validPosition(f.lon,f.lat))route.push([f.lon,f.lat]);}}
+    if(f.channel===5&&f.maxRangeFt>0)sideRanges.push(f.maxRangeFt*FEET_TO_METRES);
+    if(f.channel===0){if(f.depthM>.2&&f.depthM<200)validDepthCount++;if(f.depthM>0&&f.depthM<20)depth.push(f.depthM);if(validPosition(f.lon,f.lat))route.push([f.lon,f.lat]);}}
   const selected=route.length>180?Array.from({length:180},(_,i)=>route[Math.floor(i*(route.length-1)/179)]):route;
-  return {start:first,duration:last-first,counts,medianDepth:quantile(depth,.5),route:selected,previewStart:Math.max(0,Math.min(last-first-90,(last-first)*.5-45))};
+  return {start:first,duration:last-first,counts,medianDepth:quantile(depth,.5),sidescanRangeM:quantile(sideRanges,.5),depthCoverage:counts.primary?validDepthCount/counts.primary:0,route:selected,previewStart:Math.max(0,Math.min(last-first-90,(last-first)*.5-45))};
 }

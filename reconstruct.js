@@ -9,10 +9,10 @@
 //   comes from its shadow: h = H * L / R, with H the sonar's height above the bed, L the shadow length
 //   and R the ground range to the far end of the shadow (the standard sidescan estimate).
 // - The sidescan texture is laid on the reconstructed shape instead of a flat bed.
-import {FileWindow,quantile,primaryValue,resolvePosition,validPosition,FEET_TO_METRES} from './engine.js?v=504b5cb6fd';
+import {FileWindow,quantile,primaryValue,resolvePosition,validPosition,FEET_TO_METRES} from './engine.js?v=lake-20261106';
 
 // What each grid cell is based on.
-export const SOURCE={none:0,measured:1,bed:2,bank:3,bankAssumed:4,object:5,depression:6,land:7};
+export const SOURCE={none:0,measured:1,bed:2,bank:3,bankAssumed:4,object:5,depression:6,land:7,interpolated:8};
 const RANK=[0,6,2,4,3,7,7,1];   // a cell reached by several pings keeps its most specific source
 
 export const localMetres=origin=>{const c=Math.cos(origin.lat*Math.PI/180);return (lon,lat)=>[(lon-origin.lon)*111320*c,(lat-origin.lat)*111320];};

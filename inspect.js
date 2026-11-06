@@ -11,7 +11,7 @@
 // noise, then thinned, linked into straight segments and classified. What the sonar cannot show (hairline
 // cracks, anything under sediment) is not found; everything found is a candidate to check on site.
 // All positions below are in metres: x across the track (from the image's starboard edge), y along it.
-import {readSurvey,slidingReference,groundRange,lonLatOf,REF_STEP} from './reconstruct.js?v=504b5cb6fd';
+import {readSurvey,slidingReference,groundRange,lonLatOf,REF_STEP} from './reconstruct.js?v=lake-20261106';
 
 export const ACROSS=.015;
 const ANGLES=12,LINE_M=.3,FLANK_M=.045;
