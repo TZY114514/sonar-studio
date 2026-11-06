@@ -1,9 +1,9 @@
-import {FileWindow,scanSl3,scanBin,combineFixes,findAlignment,matchedGpsForFrame,nearestSample,exportAligned,recordingSummary,trackGeoJson,trackGpx} from './engine.js?v=e671d690ea';
-import {buildSeabedModel,seabedDepthAt,seabedBaseAt} from './reconstruct.js?v=e671d690ea';
-import {inspectLining,candidatesGeoJson} from './inspect.js?v=e671d690ea';
-import {createInspectView,CRACK_COLOURS} from './inspect-view.js?v=e671d690ea';
-import {createRouteMap} from './route-map.js?v=e671d690ea';
-import {renderScan} from './scan-image.js?v=e671d690ea';
+import {FileWindow,scanSl3,scanBin,combineFixes,findAlignment,matchedGpsForFrame,nearestSample,exportAligned,recordingSummary,trackGeoJson,trackGpx} from './engine.js?v=504b5cb6fd';
+import {buildSeabedModel,seabedDepthAt,seabedBaseAt} from './reconstruct.js?v=504b5cb6fd';
+import {inspectLining,candidatesGeoJson} from './inspect.js?v=504b5cb6fd';
+import {createInspectView,CRACK_COLOURS} from './inspect-view.js?v=504b5cb6fd';
+import {createRouteMap} from './route-map.js?v=504b5cb6fd';
+import {renderScan} from './scan-image.js?v=504b5cb6fd';
 
 const $=id=>document.getElementById(id);
 const PREVIEW_SECONDS=30;
@@ -294,7 +294,7 @@ async function buildSeabed({centre=null}={}){
   seabed.building=true;ready();seabedTools(false);
   try{
     seabedStatus('Loading the 3D viewer…','working');
-    const module=await import('./seabed-3d.js?v=e671d690ea');
+    const module=await import('./seabed-3d.js?v=504b5cb6fd');
     const timeRange=stretch&&[stretch.start+summary.start,stretch.end+summary.start];
     const model=await buildSeabedModel(sonar,frames,gps,sync,{scans:scanPoints,timeRange,...settings,progress:fraction=>{if(version===seabed.version)seabedStatus(`Reconstructing the canal from sonar and GPS · ${Math.round(fraction*100)}%`,'working');}});
     if(version!==seabed.version)return;

@@ -9,7 +9,7 @@
 //   comes from its shadow: h = H * L / R, with H the sonar's height above the bed, L the shadow length
 //   and R the ground range to the far end of the shadow (the standard sidescan estimate).
 // - The sidescan texture is laid on the reconstructed shape instead of a flat bed.
-import {FileWindow,quantile,primaryValue,resolvePosition,validPosition,FEET_TO_METRES} from './engine.js?v=e671d690ea';
+import {FileWindow,quantile,primaryValue,resolvePosition,validPosition,FEET_TO_METRES} from './engine.js?v=504b5cb6fd';
 
 // What each grid cell is based on.
 export const SOURCE={none:0,measured:1,bed:2,bank:3,bankAssumed:4,object:5,depression:6,land:7};
@@ -100,6 +100,8 @@ export function analyseSide(samples,{rangeM,H,draft,sensitivity,reference=null,s
   // water column near the transducer is far from silent, while the dry bank beyond the waterline is).
   const faintest=echoQuantile(s,0,n,.05),noise=first>6?Math.min(echoQuantile(s,1,first-1,.5),faintest):faintest;
   const side={open:true,reach,toe:null,waterline:null,assumed:false,features:[],shadowBins:[],first,dr,end:n};
+  // Zero means unknown in the reference, so weak/empty sides must still supply a row.
+  if(!shadows)side.row=new Uint8Array(Math.ceil(rangeM/REF_STEP));
   const prefix=new Float64Array(n+1);for(let i=0;i<n;i++)prefix[i+1]=prefix[i]+s[i];
   const mean=(a,b)=>{a=Math.max(0,a);b=Math.min(n,b);return b>a?(prefix[b]-prefix[a])/(b-a):0;};
   // The bed's echo level close to the boat, where the bed is surely under water.
@@ -118,7 +120,7 @@ export function analyseSide(samples,{rangeM,H,draft,sensitivity,reference=null,s
   side.open=end>=n-window;
   if(!side.open)side.waterline=Math.sqrt(Math.max(0,(end*dr)**2-draft*draft));
   if(!shadows){
-    side.row=new Uint8Array(Math.ceil(rangeM/REF_STEP));const count=new Uint16Array(side.row.length),sum=new Float32Array(side.row.length);
+    const count=new Uint16Array(side.row.length),sum=new Float32Array(side.row.length);
     for(let i=first;i<end;i++){const b=Math.floor(i*dr/REF_STEP);sum[b]+=s[i];count[b]++;}
     for(let b=0;b<side.row.length;b++)if(count[b])side.row[b]=Math.min(255,Math.round(sum[b]/count[b])+1);
     side.end=end;return side;
@@ -364,7 +366,7 @@ export async function readSurvey(file,frames,gps,sync,{draftM=.2,sensitivity=.5,
     const length=run=>{let l=0;for(let i=1;i<run.length;i++)l+=Math.hypot(run[i].x-run[i-1].x,run[i].y-run[i-1].y);return l;};
     pings.splice(0,pings.length,...runs.filter(run=>length(run)>=3).flat());
   }
-  if(pings.length<10)throw new Error('Too few sonar pings with a known position and heading');
+  if(pings.length<10)throw new Error('Too few sonar pings with a reliable position and heading after filtering slow motion, turns and track runs shorter than 3 m. Try a longer, steady straight pass; GPS matching alone does not establish the boat\u2019s heading.');
   {
     const span=Math.max(1,Math.round(pings.length/Math.max(1,(pings.at(-1).time-pings[0].time))*1)),hx=pings.map(p=>p.hx),hy=pings.map(p=>p.hy);
     pings.forEach((p,i)=>{let sx=0,sy=0;for(let k=Math.max(0,i-span);k<=Math.min(pings.length-1,i+span);k++){sx+=hx[k];sy+=hy[k];}const l=Math.hypot(sx,sy)||1;p.hx=sx/l;p.hy=sy/l;p.lx=-p.hy;p.ly=p.hx;});

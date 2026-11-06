@@ -2,8 +2,8 @@
 // Axes: three.js x = east, y = up (depth is negative), z = south.
 import * as THREE from 'three';
 import {OrbitControls} from './vendor/three/OrbitControls.js';
-import {color} from './scan-image.js?v=e671d690ea';
-import {seabedDepthAt,gridToLocal,SOURCE} from './reconstruct.js?v=e671d690ea';
+import {color} from './scan-image.js?v=504b5cb6fd';
+import {seabedDepthAt,gridToLocal,SOURCE} from './reconstruct.js?v=504b5cb6fd';
 
 // Colours. Depth is one blue ramp (shallow light, deep dark); relief diverges from a neutral grey,
 // warm for raised and cool for lower than the canal's smooth shape; sources are three categories,
