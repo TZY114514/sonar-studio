@@ -2,8 +2,8 @@
 // Axes: three.js x = east, y = up (depth is negative), z = south.
 import * as THREE from 'three';
 import {OrbitControls} from './vendor/three/OrbitControls.js';
-import {color} from './scan-image.js?v=lake-20261106';
-import {seabedDepthAt,gridToLocal,SOURCE} from './reconstruct.js?v=lake-20261106';
+import {color} from './scan-image.js?v=hover-20261106a';
+import {seabedDepthAt,gridToLocal,SOURCE} from './reconstruct.js?v=hover-20261106a';
 
 // Colours. Depth is one blue ramp (shallow light, deep dark); relief diverges from a neutral grey,
 // warm for raised and cool for lower than the canal's smooth shape; sources are three categories,
@@ -164,6 +164,11 @@ export function createSeabedViewer(container,{onSelectScan,onSelectObject=()=>{}
   renderer.domElement.className='seabed-canvas';
   renderer.domElement.setAttribute('role','img');
   container.append(renderer.domElement);
+  const depthTip=document.createElement('div');depthTip.className='depth-tooltip';depthTip.hidden=true;depthTip.setAttribute('role','tooltip');
+  const depthValue=document.createElement('strong'),depthBasis=document.createElement('span'),depthDatum=document.createElement('small');
+  depthTip.append(depthValue,depthBasis,depthDatum);container.append(depthTip);
+  let hoverFrame=0,hoverEvent=null;
+  function hideDepth(){cancelAnimationFrame(hoverFrame);hoverFrame=0;hoverEvent=null;depthTip.hidden=true;delete depthTip.dataset.kind;}
   const scene=new THREE.Scene();scene.background=new THREE.Color('#0d1d2c');
   // A soft sky-and-ground fill plus a low key light from across the canal: slopes facing it brighten and
   // the far sides of bumps darken, so the relief reads even without colour.
@@ -173,9 +178,9 @@ export function createSeabedViewer(container,{onSelectScan,onSelectObject=()=>{}
   const controls=new OrbitControls(camera,renderer.domElement);
   controls.maxPolarAngle=Math.PI/2-.02;
   const render=()=>renderer.render(scene,camera);
-  controls.addEventListener('change',render);
+  controls.addEventListener('change',()=>{hideDepth();render();});
 
-  let content=null,vertical=null,seabed=null,overlay=null,contours=null,section=null,materials=null,colours=null,markers=[],objectMarkers=[],model=null;
+  let content=null,vertical=null,seabed=null,overlay=null,contours=null,section=null,materials=null,colours=null,markers=[],objectMarkers=[],model=null,measuredPoints=null;
   // Crack screening (inspect.js): the screened stretch and the lines found in it, kept across rebuilds.
   let cracks={result:null,lines:[]},crackArea=null,crackPatch=null,crackLines=null,crackLabels=null,crackMarkers=[];
   let exaggeration=1,home=null,moved=false,mode='sonar',flight=0;
@@ -197,6 +202,7 @@ export function createSeabedViewer(container,{onSelectScan,onSelectObject=()=>{}
   new ResizeObserver(resize).observe(container);
 
   function dispose(){
+    hideDepth();measuredPoints=null;
     if(!content)return;
     content.traverse(object=>{object.geometry?.dispose();for(const material of [object.material].flat())if(material){material.map?.dispose();material.dispose();}});
     for(const material of Object.values(materials??{})){material?.map?.dispose();material?.dispose();}
@@ -276,7 +282,7 @@ export function createSeabedViewer(container,{onSelectScan,onSelectObject=()=>{}
     if(model.mode==='lake'){
       const pointGeometry=new THREE.BufferGeometry();
       pointGeometry.setAttribute('position',new THREE.Float32BufferAttribute(model.points.flatMap(p=>[p.x,-p.depth+.015,-p.y]),3));
-      const measuredPoints=new THREE.Points(pointGeometry,new THREE.PointsMaterial({color:0xffffff,size:4,sizeAttenuation:false}));
+      measuredPoints=new THREE.Points(pointGeometry,new THREE.PointsMaterial({color:0xffffff,size:4,sizeAttenuation:false}));
       vertical.add(measuredPoints);
     }
 
@@ -530,31 +536,84 @@ export function createSeabedViewer(container,{onSelectScan,onSelectObject=()=>{}
 
   // A click (not a drag) on a label or seabed dot selects that scan point; on an object label, that object.
   const raycaster=new THREE.Raycaster(),pointer=new THREE.Vector2();let down=null;
-  const hit=event=>{
+  const aim=event=>{
     const box=renderer.domElement.getBoundingClientRect();
     pointer.set((event.clientX-box.left)/box.width*2-1,-(event.clientY-box.top)/box.height*2+1);
     raycaster.setFromCamera(pointer,camera);
+    return box;
+  };
+  const hit=event=>{
+    aim(event);
     const targets=[...markers.filter(marker=>marker.dot.visible).flatMap(marker=>[marker.label,marker.dot]),...(shown.objects?objectMarkers.map(marker=>marker.label):[]),...(shown.cracks?crackMarkers.map(marker=>marker.label):[])];
     return raycaster.intersectObjects(targets,false)[0]?.object.userData??null;
   };
-  renderer.domElement.addEventListener('pointerdown',event=>{down={x:event.clientX,y:event.clientY};});
+  function showDepth(event){
+    if(!model||!seabed){hideDepth();return;}
+    const box=aim(event),surface=raycaster.intersectObject(seabed,false)[0];
+    let recorded=null,bestPixels=Infinity;
+    if(measuredPoints){
+      const worldPerPixel=2*Math.tan(THREE.MathUtils.degToRad(camera.fov)/2)*camera.position.distanceTo(controls.target)/box.height;
+      raycaster.params.Points.threshold=worldPerPixel*7;
+      for(const found of raycaster.intersectObject(measuredPoints,false)){
+        const p=model.points[found.index],world=measuredPoints.localToWorld(new THREE.Vector3(p.x,-p.depth+.015,-p.y)),screen=world.clone().project(camera);
+        const pixels=Math.hypot((screen.x+1)/2*box.width-(event.clientX-box.left),(1-screen.y)/2*box.height-(event.clientY-box.top));
+        if(screen.z< -1||screen.z>1||pixels>5||surface&&found.distance>surface.distance+worldPerPixel*7)continue;
+        if(pixels<bestPixels){bestPixels=pixels;recorded=p;}
+      }
+    }
+    const depth=recorded?.depth??(surface?-seabed.worldToLocal(surface.point.clone()).y:null);
+    depthTip.dataset.kind=recorded?'measured':Number.isFinite(depth)?'estimated':'none';
+    if(Number.isFinite(depth)){
+      depthValue.textContent=depth<0?`${(-depth).toFixed(2)} m above water`:`Depth ${depth.toFixed(2)} m`;
+      depthBasis.textContent=recorded?`Recorded cell median · ${recorded.count.toLocaleString('en-US')} reading${recorded.count===1?'':'s'}`:model.mode==='lake'?'Interpolated model surface':'Reconstructed model surface';
+      depthDatum.textContent='Relative to the water surface';depthDatum.hidden=false;
+    }else{
+      depthValue.textContent='No depth data';depthBasis.textContent='Unsampled or outside the model';depthDatum.hidden=true;
+    }
+    depthTip.hidden=false;
+    const bounds=container.getBoundingClientRect(),x=event.clientX-bounds.left,y=event.clientY-bounds.top,pad=10;
+    const left=x+16+depthTip.offsetWidth>container.clientWidth-pad?x-depthTip.offsetWidth-16:x+16;
+    const top=y+16+depthTip.offsetHeight>container.clientHeight-pad?y-depthTip.offsetHeight-16:y+16;
+    depthTip.style.left=`${Math.max(pad,Math.min(container.clientWidth-depthTip.offsetWidth-pad,left))}px`;
+    depthTip.style.top=`${Math.max(pad,Math.min(container.clientHeight-depthTip.offsetHeight-pad,top))}px`;
+  }
+  function scheduleDepth(event){
+    hoverEvent={clientX:event.clientX,clientY:event.clientY};
+    if(!hoverFrame)hoverFrame=requestAnimationFrame(()=>{hoverFrame=0;const next=hoverEvent;hoverEvent=null;if(next)showDepth(next);});
+  }
+  renderer.domElement.addEventListener('pointerdown',event=>{hideDepth();down={x:event.clientX,y:event.clientY};});
   renderer.domElement.addEventListener('pointerup',event=>{
-    if(!down||Math.hypot(event.clientX-down.x,event.clientY-down.y)>5)return;
-    const found=hit(event);if(found?.scan!=null)onSelectScan(found.scan);else if(found?.object!=null)onSelectObject(found.object);else if(found?.crack!=null)onSelectCrack(found.crack);
+    const tap=down&&Math.hypot(event.clientX-down.x,event.clientY-down.y)<=5;down=null;if(!tap)return;
+    const found=hit(event);if(found?.scan!=null)onSelectScan(found.scan);else if(found?.object!=null)onSelectObject(found.object);else if(found?.crack!=null)onSelectCrack(found.crack);else if(event.pointerType==='touch')scheduleDepth(event);
   });
-  renderer.domElement.addEventListener('pointermove',event=>{if(!event.buttons&&(markers.length||objectMarkers.length||crackMarkers.length))renderer.domElement.style.cursor=hit(event)?'pointer':'';});
+  renderer.domElement.addEventListener('pointermove',event=>{if(event.buttons){hideDepth();return;}renderer.domElement.style.cursor=hit(event)?'pointer':'';if(event.pointerType!=='touch')scheduleDepth(event);});
+  renderer.domElement.addEventListener('pointerleave',event=>{if(event.pointerType!=='touch')hideDepth();});
+  renderer.domElement.addEventListener('pointercancel',hideDepth);
+  renderer.domElement.addEventListener('wheel',hideDepth,{passive:true});
+  document.addEventListener('pointerdown',event=>{if(!container.contains(event.target))hideDepth();});
 
   // Where a scan label (or an object label) is drawn, in CSS pixels from the canvas corner.
   const project=object=>{const point=object.getWorldPosition(new THREE.Vector3()).project(camera),box=renderer.domElement.getBoundingClientRect();return {x:(point.x+1)/2*box.width,y:(1-point.y)/2*box.height};};
   const screenPosition=index=>project(markers[index].label);
+  const measurementScreenPosition=index=>{
+    const p=model?.points?.[index];if(!p||!measuredPoints)return null;
+    const world=measuredPoints.localToWorld(new THREE.Vector3(p.x,-p.depth+.015,-p.y)).project(camera),box=renderer.domElement.getBoundingClientRect();
+    return {x:(world.x+1)/2*box.width,y:(1-world.y)/2*box.height,depth:p.depth,count:p.count};
+  };
+  const surfaceScreenPosition=index=>{
+    const ids=seabed?.geometry.index,positions=seabed?.geometry.getAttribute('position');if(!ids||index<0||index*3+2>=ids.count)return null;
+    const p=new THREE.Vector3();for(let i=0;i<3;i++)p.add(new THREE.Vector3().fromBufferAttribute(positions,ids.getX(index*3+i)));p.multiplyScalar(1/3);
+    const depth=-p.y,world=seabed.localToWorld(p).project(camera),box=renderer.domElement.getBoundingClientRect();
+    return {x:(world.x+1)/2*box.width,y:(1-world.y)/2*box.height,depth};
+  };
   const objectScreenPosition=index=>{const {label}=objectMarkers[index],p=project(label);return {x:p.x,y:p.y-6};};
   const crackScreenPosition=index=>{const marker=crackMarkers.find(m=>m.index===index);if(!marker)return null;const p=project(marker.label);return {x:p.x,y:p.y-6};};
   const toBlob=()=>new Promise(resolve=>{render();renderer.domElement.toBlob(resolve,'image/png');});
   function clear(){dispose();model=null;render();}
-  const state=()=>({mode:seabed?.material===materials?.sonar?'sonar':mode,surveyMode:model?.mode??'canal',coverage:model?.coverage,soundings:model?.soundings,overlays:{...shown},objects:objectMarkers.length,exaggeration,selectedObject,
+  const state=()=>({mode:seabed?.material===materials?.sonar?'sonar':mode,surveyMode:model?.mode??'canal',coverage:model?.coverage,soundings:model?.soundings,measuredPoints:model?.points?.length??0,triangles:(seabed?.geometry.index?.count??0)/3,overlays:{...shown},objects:objectMarkers.length,exaggeration,selectedObject,
     cracks:{lines:crackLines?.children.length?cracks.lines.length:0,labels:crackMarkers.length,picture:Boolean(crackPatch?.visible&&crackArea?.visible),outline:Boolean(crackArea?.children.some(child=>child.isLine))}});
 
-  const api={show,clear,setExaggeration,setColour,setOverlay,select,selectObject,focusObject,setSection,setCracks,setCrackLines,covers,focusLine,focusCrackArea,resetView,topView,screenPosition,objectScreenPosition,crackScreenPosition,toBlob,state};
+  const api={show,clear,setExaggeration,setColour,setOverlay,select,selectObject,focusObject,setSection,setCracks,setCrackLines,covers,focusLine,focusCrackArea,resetView,topView,screenPosition,measurementScreenPosition,surfaceScreenPosition,objectScreenPosition,crackScreenPosition,toBlob,state};
   container.seabedViewer=api;   // reachable from the page for tests and debugging
   return api;
 }

@@ -1,10 +1,10 @@
-import {FileWindow,scanSl3,scanBin,combineFixes,findAlignment,matchedGpsForFrame,nearestSample,exportAligned,recordingSummary,trackGeoJson,trackGpx} from './engine.js?v=lake-20261106';
-import {buildSeabedModel,seabedDepthAt,seabedBaseAt} from './reconstruct.js?v=lake-20261106';
-import {buildLakeModel} from './bathymetry.js?v=lake-20261106';
-import {inspectLining,candidatesGeoJson} from './inspect.js?v=lake-20261106';
-import {createInspectView,CRACK_COLOURS} from './inspect-view.js?v=lake-20261106';
-import {createRouteMap} from './route-map.js?v=lake-20261106';
-import {renderScan} from './scan-image.js?v=lake-20261106';
+import {FileWindow,scanSl3,scanBin,combineFixes,findAlignment,matchedGpsForFrame,nearestSample,exportAligned,recordingSummary,trackGeoJson,trackGpx} from './engine.js?v=hover-20261106a';
+import {buildSeabedModel,seabedDepthAt,seabedBaseAt} from './reconstruct.js?v=hover-20261106a';
+import {buildLakeModel} from './bathymetry.js?v=hover-20261106a';
+import {inspectLining,candidatesGeoJson} from './inspect.js?v=hover-20261106a';
+import {createInspectView,CRACK_COLOURS} from './inspect-view.js?v=hover-20261106a';
+import {createRouteMap} from './route-map.js?v=hover-20261106a';
+import {renderScan} from './scan-image.js?v=hover-20261106a';
 
 const $=id=>document.getElementById(id);
 const PREVIEW_SECONDS=30;
@@ -298,7 +298,7 @@ async function buildSeabed({centre=null}={}){
   seabed.building=true;ready();seabedTools(false);
   try{
     seabedStatus('Loading the 3D viewer…','working');
-    const module=await import('./seabed-3d.js?v=lake-20261106');
+    const module=await import('./seabed-3d.js?v=hover-20261106a');
     const timeRange=stretch&&[stretch.start+summary.start,stretch.end+summary.start];
     const model=await (lake?buildLakeModel:buildSeabedModel)(sonar,frames,gps,sync,{scans:scanPoints,timeRange,...settings,progress:fraction=>{if(version===seabed.version)seabedStatus(`${lake?'Mapping recorded depths':'Reconstructing the canal'} · ${Math.round(fraction*100)}%`,'working');}});
     if(version!==seabed.version)return;
@@ -723,7 +723,7 @@ function setSurveyMode(){
   document.querySelectorAll('[data-lake-setting]').forEach(element=>element.hidden=!lake);
   $('seabed-settings-note').textContent=lake?'Recorded under-boat depths are grouped into 1 m cells (coarser for very large areas). Only gaps surrounded by measured cells within the interpolation radius are estimated; 0 leaves measured cells only. Transducer depth adds the distance from the surface to the sonar. Changes apply when rebuilt.':'Transducer depth is the distance from the surface to the sonar. Shadow sensitivity and bed detail from shading affect sidescan estimates. Brightness-derived relief, banks and objects are estimates. Changes apply when rebuilt.';
   $('survey-guide').textContent=lake?'Lake / pond: white dots show measured depth cells. Surfaces between them are local estimates. Empty space is unsurveyed; the shape does not represent the whole lake. Cell size is a display setting, not GPS accuracy.':'Canal: a sidescan-based estimate of the bed, bank slopes and objects. Requires steady motion to infer the scan direction; echo brightness can also reflect bottom material.';
-  $('seabed-guide').textContent=lake?'Drag to rotate, scroll or pinch to zoom, and right-drag or use two fingers to pan. Top view shows the survey footprint. Click a numbered point to view its scan and recorded depth profile. No objects, shorelines or heights are inferred from echo brightness. GPS accuracy, bottom tracking and survey coverage limit the result. Not for navigation.':'Drag to rotate and zoom; click a numbered point or object to show its scan and cross-section. Depth beneath the boat is measured; bed relief, bank slopes and object heights are sidescan-based estimates. Dark areas can be soft material, shadows or missing returns. Not for navigation.';
+  $('seabed-guide').textContent=lake?'Hover over the model, or tap on a touch screen, to read depth from the water surface. White dots show recorded cell medians; the surface between dots is interpolated. Drag to rotate, scroll or pinch to zoom, and use Top view to inspect coverage. Click a numbered point to view its scan. GPS accuracy, bottom tracking and coverage limit the result. Not for navigation.':'Hover or tap the model to read its depth from the water surface. Drag to rotate and zoom; click a numbered point or object to show its scan and cross-section. Depth beneath the boat is measured; bed relief, bank slopes and object heights are sidescan-based estimates. Not for navigation.';
   document.querySelector(`input[name="seabed-colour"][value="${lake?'depth':'sonar'}"]`).checked=true;
   resetSeabed('Match the sonar and GPS files, then build the model.');
   resetCracks(lake?'Crack screening applies to canal lining. Choose Canal only when surveying a lined channel.':'Match files and select a route point to screen the canal lining.');

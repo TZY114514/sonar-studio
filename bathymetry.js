@@ -1,6 +1,6 @@
 // Lake/pond view: recorded under-boat depth, bounded local interpolation, and no sidescan-derived height.
-import {quantile,resolvePosition,validPosition} from './engine.js?v=lake-20261106';
-import {localMetres,SOURCE,seabedDepthAt} from './reconstruct.js?v=lake-20261106';
+import {quantile,resolvePosition,validPosition} from './engine.js?v=hover-20261106a';
+import {localMetres,SOURCE,seabedDepthAt} from './reconstruct.js?v=hover-20261106a';
 
 // Estimate only inside the surrounding samples, within a user-visible radius. Never extrapolate.
 export function localDepthEstimate(x,y,neighbours,radius){
